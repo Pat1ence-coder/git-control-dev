@@ -1,0 +1,1 @@
+export const isSafeRef = (ref: string): boolean => !!ref && ref.length <= 200 && !ref.startsWith('-') && !ref.includes('..') && !/[\s~^:?*\[\\\]\x00-\x1f\x7f]/.test(ref) && !ref.includes('@{') && !ref.endsWith('.') && !ref.endsWith('/') && !ref.endsWith('.lock') && !ref.includes('//');

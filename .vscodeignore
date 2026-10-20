@@ -1,0 +1,11 @@
+src/**
+scripts/**
+.vscode/**
+node_modules/**
+tsconfig.json
+esbuild.js
+**/*.map
+dist/test.js
+dist/host-test.js
+
+preview.html
