@@ -1,6 +1,6 @@
 import './launcher';
-import './demo-isolation';
 import './webview';
+import './provider';
 import './native-git';
 import './security';
 import { test } from 'node:test';
@@ -16,7 +16,6 @@ import { resolveInside } from '../git/paths';
 import { isSafeRef } from '../git/safeRef';
 import { esc, clipChars } from '../shared/html';
 import { asHostMessage } from '../shared/protocol';
-import { demoReducer, initialDemo, DEMO_CONFLICT, demoCheck, demoGraph } from '../demo/scenario';
 import { renderGraph, renderCommitDetail, livePhase } from '../webview/render';
 import { GitService } from '../git/gitService';
 import { ResolutionSafety } from '../git/safety';
@@ -60,6 +59,17 @@ test('diff3 base is excluded; CRLF and final newline preserved across multiple h
     assert.equal(applyResolution('prefix\r\n' + hunk + 'middle\r\n' + hunk, 'both').text, 'prefix\r\na\r\nb\r\nmiddle\r\na\r\nb\r\n');
     assert.equal(applyResolution(hunk.trimEnd(), 'incoming').text, 'b');
 });
+test('conflict parser exposes bounded context and real side line numbers', () => {
+    const text = ['one', 'two', 'three', '<<<<<<< ours', 'old-a', 'old-b', '=======', 'new-a', 'new-b', '>>>>>>> theirs', 'after-a', 'after-b', 'after-c', 'after-d'].join('\n');
+    const [h] = parseConflict(text);
+    assert.ok(h);
+    assert.deepEqual(h.before, ['one', 'two', 'three']);
+    assert.equal(h.beforeStart, 1);
+    assert.equal(h.currentStart, 5);
+    assert.equal(h.incomingStart, 8);
+    assert.deepEqual(h.after, ['after-a', 'after-b', 'after-c']);
+    assert.equal(h.afterStart, 11);
+});
 test('malformed conflict remains detectable; empty side can delete a block', () => {
     const malformed = '<<<<<<< HEAD\nx\n=======\ny';
     assert.equal(applyResolution(malformed, 'ai').applied, false);
@@ -68,22 +78,6 @@ test('malformed conflict remains detectable; empty side can delete a block', () 
 });
 test('heuristic keeps shared lines once and includes each divergent side', () => {
     assert.equal(heuristicMerge('start\na\nend', 'start\nb\nend'), 'start\na\nb\nend');
-});
-test('demo only allows valid transitions and exposes failed checks', () => {
-    let state = initialDemo();
-    assert.deepEqual(demoReducer(state, { type: 'resolve', strategy: 'ai' }), state);
-    state = demoReducer(state, { type: 'start' });
-    state = demoReducer(state, { type: 'merge-animated' });
-    state = demoReducer(state, { type: 'resolve', strategy: 'ai' });
-    state = demoReducer(state, { type: 'checked' });
-    state = demoReducer(state, { type: 'finish' });
-    assert.equal(state.phase, 'reviewing');
-    state = demoReducer(state, { type: 'commit' });
-    state = demoReducer(state, { type: 'committed' });
-    assert.equal(state.phase, 'merged');
-    assert.ok(demoCheck('ai').every(c => c.ok));
-    assert.ok(demoCheck('both').every(c => !c.ok));
-    assert.equal(demoGraph('merged').nodes[0].role, 'merge');
 });
 test('graph handles merges, deduplication and missing parents; pending merge links both tips', () => {
     const graph = layoutCommits([{ hash: 'A', parents: ['B', 'C'], message: 'merge' }, { hash: 'B', parents: ['D'], message: 'main' }, { hash: 'C', parents: ['D'], message: 'feature' }, { hash: 'D', parents: ['outside'], message: 'base' }, { hash: 'a', parents: [], message: 'duplicate' }], 'A');
@@ -103,6 +97,9 @@ test('untrusted paths, refs and messages are rejected', () => {
         assert.equal(isSafeRef(ref), false);
     assert.ok(isSafeRef('功能/结算'));
     assert.equal(asHostMessage({ type: 'resolve', path: 'a', strategy: 'execute' }), undefined);
+    assert.equal(asHostMessage({ type: 'set-mode', mode: 'live' }), undefined);
+    assert.equal(asHostMessage({ type: 'run-demo' }), undefined);
+    assert.equal(asHostMessage({ type: 'hydrate', snapshot: null }), undefined);
     assert.equal(asHostMessage({ type: 'inspect-commit', hash: '--help', requestId: 1 }), undefined);
     assert.equal(asHostMessage({ type: 'copy', text: 'a'.repeat(30000) })?.type, 'copy');
     assert.equal(asHostMessage({ type: 'commit-staged', repoId: '/repo', token: 'invalid', message: 'commit' }), undefined);
@@ -354,7 +351,7 @@ test('GitService: real conflicts, resolution/staging, history diff, abort and wo
         await t.test('dirty editor blocks resolution and staging without saving it', async () => {
             await service.merge('feature');
             host.workspace.textDocuments.length = 0;
-            host.workspace.textDocuments.push({ uri: uri(path.join(dir, 'file.ts')), getText: () => DEMO_CONFLICT, positionAt: (n: number) => n, save: async () => false, isDirty: true });
+            host.workspace.textDocuments.push({ uri: uri(path.join(dir, 'file.ts')), getText: () => '<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feature\n', positionAt: (n: number) => n, save: async () => false, isDirty: true });
             await assert.rejects(() => service.resolve('file.ts', 'current'), /未保存/);
             await assert.rejects(() => service.stage('file.ts'), /未保存/);
             assert.ok(git('ls-files', '-u').length > 0);
@@ -682,7 +679,7 @@ test('GitService: real conflicts, resolution/staging, history diff, abort and wo
     }
 });
 
-test('merge animation moves from parent branches toward the new commit, without reversing history', () => {
+test('merge graph draws pending and join edges from parent tips toward the result', () => {
     const graph = {
         laneCount: 2,
         nodes: [
@@ -695,12 +692,12 @@ test('merge animation moves from parent branches toward the new commit, without 
             { id: 'current', from: 'merge', to: 'main', style: 'join' as const }
         ]
     };
-    const html = renderGraph(graph, false, true);
-    assert.match(html, /animateMotion[^>]+path="M39 66C39 44,17 44,17 22"/);
+    const html = renderGraph(graph, false);
+    assert.match(html, /class="edge lane-1 pending" d="M39 66C39 44,17 44,17 22"/);
     assert.match(html, /class="edge lane-0 join" d="M17 110L17 22"/);
     assert.equal(graph.edges[0].from, 'merge');
     assert.equal(graph.nodes[0].row, 0);
-    const reduced = renderGraph(graph, true, true);
-    assert.ok(!reduced.includes('animateMotion'));
+    const reduced = renderGraph(graph, true);
+    assert.ok(reduced.includes('class="edge lane-0 solid"'));
     assert.ok(!reduced.includes('edge lane-0 join'));
 });

@@ -2,14 +2,11 @@ import { UserFacingError } from '../git/errors';
 import * as vscode from 'vscode';
 import { randomBytes } from 'node:crypto';
 import { GitService, describeGitError } from '../git/gitService';
-import { asHostMessage, type Mode, type ToHost, type ToWebview } from '../shared/protocol';
+import { asHostMessage, type ToHost, type ToWebview } from '../shared/protocol';
 export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     private view?: vscode.WebviewView | vscode.WebviewPanel;
     private panel?: vscode.WebviewPanel;
     private ready = false;
-    private pendingDemo = false;
-    private mode: Mode = 'demo';
-    private initialized = false;
     private queue: Promise<void> = Promise.resolve();
     private readonly subscriptions: vscode.Disposable[] = [];
     constructor(private readonly context: vscode.ExtensionContext, private readonly git: GitService, private readonly operation = { busy: false }) {
@@ -41,42 +38,21 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
         void this.view?.webview.postMessage(message); }
     private notify(text: string, level: 'info' | 'error' = 'info'): void { this.post({ type: 'notice', level, text }); }
     private enqueue(action: () => Promise<void>): Promise<void> { return this.queue = this.queue.then(action).catch(e => { this.notify(describeGitError(e), 'error'); }); }
-    private async setMode(mode: Mode): Promise<void> { if (this.operation.busy)
-        throw new UserFacingError('Git 操作进行中，请稍候再切换模式。'); this.mode = mode; this.initialized = true; await this.context.workspaceState.update('mode', mode); }
     private async hydrate(): Promise<void> {
         await this.git.whenReady();
-        if (!this.initialized) {
-            const saved = this.context.workspaceState.get<Mode>('mode');
-            const configured = vscode.workspace.getConfiguration('generativeGit').get<string>('defaultMode', 'auto');
-            this.mode = saved || (configured === 'live' || configured === 'demo' ? configured : this.git.hasRepository() ? 'live' : 'demo');
-            this.initialized = true;
-        }
-        const snapshot = this.mode === 'live' ? await this.git.snapshot() : null;
+        const snapshot = await this.git.snapshot();
         this.ready = true;
-        this.post({ type: 'hydrate', mode: this.mode, snapshot: this.mode === 'live' ? snapshot : null, hasRepo: this.git.hasRepository(), notice: this.git.startupProblem });
-        if (this.pendingDemo) {
-            this.pendingDemo = false;
-            this.post({ type: 'run-demo' });
-        }
+        this.post({ type: 'hydrate', snapshot, notice: this.git.startupProblem });
     }
     private async pushSnapshot(_force: boolean): Promise<void> {
-        // A forced refresh must never bypass the demo boundary.
-        if (!this.ready || this.mode !== 'live') return;
+        if (!this.ready) return;
         const snapshot = await this.git.snapshot();
-        if (this.mode === 'live') this.post({ type: 'snapshot', snapshot, hasRepo: this.git.hasRepository() });
+        this.post({ type: 'snapshot', snapshot });
     }
     async refresh(): Promise<void> {
-        if (this.mode !== 'live') {
-            this.notify('演示模式仅使用模拟数据，不刷新真实仓库。');
-            return;
-        }
         await this.git.refresh();
         await this.enqueue(() => this.pushSnapshot(true));
     }
-    async runDemo(): Promise<void> { await this.setMode('demo'); if (this.ready)
-        this.post({ type: 'run-demo' });
-    else
-        this.pendingDemo = true; this.openWorkbench(); }
     private async withLock(action: () => Promise<void>): Promise<void> {
         if (this.operation.busy) {
             this.post({ type: 'live-result', kind: 'error', text: '上一个 Git 操作还没结束，请稍后重试。' });
@@ -99,12 +75,6 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
             await this.enqueue(() => this.hydrate());
             return;
         }
-        if (message.type === 'set-mode') {
-            await this.setMode(message.mode);
-            if (message.mode === 'live')
-                await this.enqueue(() => this.pushSnapshot(true));
-            return;
-        }
         if (message.type === 'copy') {
             await vscode.env.clipboard.writeText(message.text);
             this.notify('已复制，可以粘贴到聊天。');
@@ -120,10 +90,6 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
         }
         if (message.type === 'refresh') {
             await this.refresh();
-            return;
-        }
-        if (this.mode !== 'live') {
-            this.notify('演示模式不会操作真实仓库。');
             return;
         }
         switch (message.type) {

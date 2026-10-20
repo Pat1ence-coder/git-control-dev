@@ -2,8 +2,6 @@ node_modules/
 dist/
 *.vsix
 .DS_Store
-
-preview.html
 .vscode/
 
 # Local secrets, generated files and reference material
