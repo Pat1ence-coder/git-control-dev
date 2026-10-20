@@ -1,5 +1,4 @@
 import type { GraphModel } from './model';
-export type Mode = 'demo' | 'live';
 export type Strategy = 'current' | 'incoming' | 'both' | 'ai';
 export interface Hunk {
     start: number;
@@ -8,6 +7,12 @@ export interface Hunk {
     incoming: string;
     currentLabel: string;
     incomingLabel: string;
+    currentStart?: number;
+    incomingStart?: number;
+    before?: string[];
+    after?: string[];
+    beforeStart?: number;
+    afterStart?: number;
 }
 export interface ConflictFile {
     path: string;
@@ -69,9 +74,6 @@ export interface StagedReview {
 export type ToHost = {
     type: 'ready' | 'refresh' | 'abort-merge' | 'suggest-commit' | 'open-scm' | 'open-workbench' | 'native-stage-conflicts';
 } | {
-    type: 'set-mode';
-    mode: Mode;
-} | {
     type: 'select-repo';
     repoId: string;
 } | {
@@ -108,16 +110,11 @@ export type ToHost = {
 };
 export type ToWebview = {
     type: 'hydrate';
-    mode: Mode;
-    hasRepo: boolean;
     snapshot: Snapshot | null;
     notice?: string;
 } | {
     type: 'snapshot';
     snapshot: Snapshot | null;
-    hasRepo: boolean;
-} | {
-    type: 'run-demo';
 } | {
     type: 'notice';
     level: 'info' | 'error';
@@ -155,10 +152,6 @@ export function asHostMessage(value: unknown): ToHost | undefined {
         case 'open-scm':
         case 'native-stage-conflicts':
         case 'open-workbench': return { type: m.type };
-        case 'set-mode':
-            if (m.mode === 'demo' || m.mode === 'live')
-                return { type: m.type, mode: m.mode };
-            break;
         case 'select-repo':
             if (str('repoId'))
                 return m as unknown as ToHost;

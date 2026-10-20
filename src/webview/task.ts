@@ -1,14 +1,10 @@
-import type { ConflictFile, Mode, Snapshot } from '../shared/protocol';
+import type { ConflictFile, Snapshot } from '../shared/protocol';
 import { esc, clipChars } from '../shared/html';
-import { DEMO_CONFLICT, type DemoState } from '../demo/scenario';
-import { parseConflict } from '../git/conflicts';
 import { button, icon, type LiveState } from './render';
 
 export interface TaskView {
-    mode: Mode;
     phase: string;
     snapshot: Snapshot | null;
-    demo: DemoState;
     live: LiveState;
     detailOpen: boolean;
     reviewOpen: boolean;
@@ -17,23 +13,22 @@ export interface TaskView {
     branchPickerOpen: boolean;
     busy: boolean;
 }
-export function taskConflicts(view: Pick<TaskView, 'mode' | 'phase' | 'snapshot'>): ConflictFile[] {
-    if (view.mode === 'demo') return view.phase === 'conflict'
-        ? [{ path: 'src/checkout.ts', status: '双方修改', hunks: parseConflict(DEMO_CONFLICT) }] : [];
+export function taskConflicts(view: Pick<TaskView, 'snapshot'>): ConflictFile[] {
     return view.snapshot?.conflicts || [];
 }
 export function taskTitle(view: TaskView): string {
-    if (view.mode === 'demo') return '合并结算折扣与税率修复';
-    const head = view.snapshot?.headName || '当前分支';
+    if (!view.snapshot) return view.phase === 'loading' ? '正在连接 Git' : '打开一个 Git 仓库';
+    const head = view.snapshot.headName;
     const incoming = view.live.kind === 'confirm' || view.live.kind === 'merging' ? view.live.ref : view.snapshot?.mergingRef;
     return incoming ? `将 ${incoming} 合入 ${head}` : `${head} 的仓库改动`;
 }
 export function taskStatus(phase: string): { label: string; tone: string } {
-    if (['merged', 'committed'].includes(phase)) return { label: '已提交', tone: 'success' };
+    if (phase === 'empty') return { label: '未打开仓库', tone: 'neutral' };
+    if (phase === 'committed') return { label: '已提交', tone: 'success' };
     if (phase === 'conflict') return { label: '存在冲突', tone: 'warning' };
     if (['reviewing', 'ready'].includes(phase)) return { label: '等待审查', tone: 'ready' };
     if (phase === 'error') return { label: '需要处理', tone: 'warning' };
-    if (['merging', 'resolving', 'checking', 'committing', 'loading'].includes(phase)) return { label: '进行中', tone: 'running' };
+    if (['merging', 'resolving', 'committing', 'loading'].includes(phase)) return { label: '进行中', tone: 'running' };
     return { label: '准备就绪', tone: 'neutral' };
 }
 function excerpt(file: ConflictFile): string {
@@ -49,22 +44,21 @@ function conflictControl(view: TaskView, files: ConflictFile[]): string {
     return `<div class="conflict-peek">${button('peek-conflicts', `${icon('warning')}<span>${count} 处冲突</span><span class="subtle">· ${files.length} 个文件</span>`, 'conflict-trigger', `aria-expanded="${view.peekOpen}" aria-controls="conflict-popover"`)}${view.peekOpen ? `<section id="conflict-popover" class="conflict-popover" aria-label="冲突摘要"><div class="popover-heading"><strong>双方修改了相同的代码</strong>${button('close-peek', icon('close'), 'icon-button', 'aria-label="关闭冲突摘要"')}</div>${files.slice(0, 3).map(excerpt).join('')}<div class="popover-footer"><span>这里只展示冲突片段</span>${button('show-conflicts', '查看完整冲突', 'text-button')}</div></section>` : ''}</div>`;
 }
 export function renderTaskControls(view: TaskView): string {
-    const { phase, mode, snapshot: s } = view;
+    const { phase, snapshot: s } = view;
     const disabled = view.busy ? 'disabled' : '';
     if (view.detailOpen) return `<span class="task-status-line">${icon('commit')}正在查看提交详情</span>${button('close-detail', '返回任务', 'text-button')}`;
     if (view.reviewOpen) return `<span class="task-status-line">${icon('commit')}${phase === 'committing' ? '正在提交已审查的改动' : '审查暂存内容，再确认提交'}</span>${button('collapse-task', '收起审查', 'text-button', disabled)}`;
     if (phase === 'conflict') return conflictControl(view, taskConflicts(view)) + (view.conflictsOpen
         ? button('collapse-task', '收起详情', 'text-button')
-        : button('show-conflicts', '解决冲突', 'primary'));
-    const running: Record<string, string> = { loading: '正在连接 Git', merging: '正在比较分支变更', resolving: mode === 'demo' ? '正在模拟解决冲突' : '请完成编辑器中的冲突确认', checking: '正在检查演示结果', committing: '正在创建提交' };
+        : button('show-conflicts', '解决冲突', 'conflict-primary'));
+    const running: Record<string, string> = { loading: '正在连接 Git', merging: '正在比较分支变更', resolving: '请完成编辑器中的冲突确认', committing: '正在创建提交' };
     if (running[phase]) return `<span class="task-status-line"><i class="spinner"></i>${running[phase]}</span>`;
-    if (['merged', 'committed'].includes(phase)) return `<span class="task-status-line success">${icon('check')}${mode === 'demo' ? '演示提交已完成' : '改动已提交到本地'}</span><div class="footer-actions">${mode === 'demo' ? button('demo-replay', '再看一遍', 'text-button') : button('live-back', '返回工作区', 'text-button')}${button('inspect-commit', '查看提交', 'primary', `data-hash="${esc(mode === 'demo' ? 'e7b21aa' : view.live.kind === 'committed' ? view.live.hash || s?.headHash || '' : '')}"`)}</div>`;
+    if (phase === 'committed') return `<span class="task-status-line success">${icon('check')}改动已提交到本地</span><div class="footer-actions">${button('live-back', '返回工作区', 'text-button')}${button('inspect-commit', '查看提交', 'primary', `data-hash="${esc(view.live.kind === 'committed' ? view.live.hash || s?.headHash || '' : '')}"`)}</div>`;
     if (phase === 'error') return `<span class="task-status-line warning">${icon('warning')}操作没有完成</span>${button('live-back', '返回任务', 'secondary')}`;
     if (phase === 'confirm') return `<span class="task-status-line">${icon('branch')}请确认下面的操作</span>${button('live-back', '取消', 'text-button')}`;
-    if (phase === 'empty') return `<span class="task-status-line">尚未打开本地仓库</span>${button('run-demo', '运行演示', 'primary')}`;
+    if (phase === 'empty') return `<span class="task-status-line">尚未打开本地仓库</span>${button('open-scm', '打开 Source Control', 'primary')}`;
     if (view.branchPickerOpen) return `<span class="task-status-line">${icon('branch')}选择要合入的本地分支</span>${button('collapse-task', '收起', 'text-button')}`;
-    if (['ready', 'reviewing'].includes(phase) || (mode === 'live' && !!s?.stagedCount)) return `<span class="task-status-line">${icon('commit')}${mode === 'demo' ? 1 : s?.stagedCount || 0} 个文件等待审查</span>${button('review-staged', '审查并提交', 'primary')}`;
-    if (mode === 'demo') return `<span class="task-status-line">${icon('branch')}feature/checkout-flow <span class="subtle">→ main</span></span>${button('demo-start', '开始合并', 'primary')}`;
+    if (['ready', 'reviewing'].includes(phase) || !!s?.stagedCount) return `<span class="task-status-line">${icon('commit')}${s?.stagedCount || 0} 个文件等待审查</span>${button('review-staged', '审查并提交', 'primary')}`;
     return `<span class="task-status-line">${icon('check')}${s?.workingTreeCount ? `${s.workingTreeCount} 项未暂存改动` : '工作区干净'}</span><div class="footer-actions">${button('review-staged', '查看暂存区', 'text-button')}${button('choose-branch', '合并分支', 'primary', s?.canMerge && !s.rebasing ? '' : 'disabled')}</div>`;
 }
 export function taskExplanation(view: TaskView): string {
@@ -73,9 +67,9 @@ export function taskExplanation(view: TaskView): string {
         return `两条分支在 ${paths} 中存在冲突。点击冲突数量查看摘要，再展开代码选择解决方式。`;
     }
     if (['reviewing', 'ready'].includes(view.phase)) return '改动已经暂存。可以逐个文件检查 diff、编辑提交说明，然后在这里确认提交。';
-    if (['merged', 'committed'].includes(view.phase)) return view.mode === 'demo' ? '演示已完成。图中的提交、检查和改动均为模拟数据。' : '本地提交已完成。可以点击提交查看详情，本次操作没有执行推送。';
-    if (view.mode === 'demo') return '<code>main</code> 修复了税率，<code>feature/checkout-flow</code> 增加了折扣。这张卡片会随着合并、冲突和提交更新。';
-    if (view.snapshot && !view.snapshot.canMerge)
+    if (view.phase === 'committed') return '本地提交已完成。可以点击提交查看详情，本次操作没有执行推送。';
+    if (!view.snapshot) return '打开一个本地 Git 仓库后，这里会显示提交历史、未暂存更改和合并操作。';
+    if (!view.snapshot.canMerge)
         return '点击提交查看历史。当前宿主缺少合并 API，可在终端执行 git merge 后回到这里处理冲突。';
     return '点击提交查看历史，或选择分支开始合并。真实操作前会要求确认。';
 }

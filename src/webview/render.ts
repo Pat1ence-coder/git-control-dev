@@ -1,8 +1,6 @@
 import { esc, clipChars } from '../shared/html';
 import type { GraphModel } from '../shared/model';
 import type { ConflictFile, CommitDetail, Snapshot, Strategy, StagedReview } from '../shared/protocol';
-import { DEMO_CONFLICT, demoResolved, demoCheck, type DemoState } from '../demo/scenario';
-import { parseConflict } from '../git/conflicts';
 export type LiveState = {
     kind: 'overview';
 } | {
@@ -32,7 +30,7 @@ function relativeTime(value?: string): string {
     if (minutes < 1440) return `${Math.floor(minutes / 60)}h`;
     return `${Math.floor(minutes / 1440)}d`;
 }
-export function renderGraph(graph: GraphModel, reduced: boolean, particle = false, selected?: string): string {
+export function renderGraph(graph: GraphModel, reduced: boolean, selected?: string): string {
     if (!graph.nodes.length) return '<div class="graph-empty">打开仓库后，这里会显示提交历史。</div>';
     const rowH = 44, laneW = 22, left = 17;
     const railWidth = left + Math.max(1, graph.laneCount) * laneW + 10;
@@ -52,7 +50,7 @@ export function renderGraph(graph: GraphModel, reduced: boolean, particle = fals
             : `M${x(start.lane)} ${y(start.row)}C${x(start.lane)} ${mid},${x(end.lane)} ${mid},${x(end.lane)} ${y(end.row)}`;
         const lane = a.lane === b.lane ? a.lane : b.lane;
         const style = reduced && edge.style === 'join' ? 'solid' : edge.style;
-        return `<path class="edge lane-${lane % 6} ${style}" d="${d}"/>${particle && !reduced && edge.style === 'pending' && a.lane !== b.lane ? `<circle r="2.5" class="spark"><animateMotion dur="1.4s" repeatCount="indefinite" path="${d}"/></circle>` : ''}`;
+        return `<path class="edge lane-${lane % 6} ${style}" d="${d}"/>`;
     }).join('');
     const dots = graph.nodes.map(n => `<g class="lane-${n.lane % 6} ${n.role}">${n.tip && !reduced ? `<circle class="pulse" cx="${x(n.lane)}" cy="${y(n.row)}" r="5"/>` : ''}<circle class="dot" cx="${x(n.lane)}" cy="${y(n.row)}" r="${n.tip ? 4.5 : 3.5}"/>${n.role === 'merge' ? `<circle class="merge-ring" cx="${x(n.lane)}" cy="${y(n.row)}" r="7"/>` : ''}</g>`).join('');
     const rows = graph.nodes.map(n => {
@@ -82,39 +80,46 @@ function title(label: string, heading: string, body = ''): string {
     return `<div class="section-heading"><div><div class="eyebrow">${label}</div><h2>${heading}</h2>${body ? `<p class="description">${body}</p>` : ''}</div></div>`;
 }
 function progress(label: string): string { return `<div class="progress" role="progressbar" aria-label="${label}"><span></span></div>`; }
-function codeLines(text: string, start = 1): string {
-    return `<div class="code-lines">${text.split('\n').map((line, i) => `<div class="code-row"><span class="line-number">${start + i}</span><code>${esc(line) || ' '}</code></div>`).join('')}</div>`;
+function codeLines(text: string, start = 1, cls = ''): string {
+    return `<div class="code-lines${cls ? ' ' + cls : ''}">${text.split('\n').map((line, i) => `<div class="code-row"><span class="line-number">${start + i}</span><code>${esc(line) || ' '}</code></div>`).join('')}</div>`;
 }
-function strategies(demo: boolean): string {
-    return `<div class="resolution-bar"><span>解决方式</span><div class="strategies">${Object.entries(strategyNames).map(([key, name], i) => button(demo ? 'demo-resolve' : 'resolve', `${name}<kbd>${i + 1}</kbd>`, key === 'ai' ? 'primary strategy' : 'secondary strategy', `data-strategy="${key}"`)).join('')}</div></div><p class="micro">${demo ? '演示：AI 草拟使用预设结果。' : '先打开完整差异预览；确认后备份、写回并暂存。AI 草拟使用本地规则，请检查结果。'}</p>`;
+function contextLines(lines: string[] | undefined, start: number | undefined, cls: string): string {
+    return lines?.length ? codeLines(lines.join('\n'), start ?? 1, `hunk-context ${cls}`) : '';
 }
-export function renderConflict(file: ConflictFile, demo: boolean): string {
-    return `<div class="code-surface"><div class="file-heading">${icon('file')}<code>${esc(file.path)}</code><span class="badge warning">${esc(file.status)}</span></div>${file.note ? `<p class="notice">${esc(file.note)}</p>` : ''}${file.truncated ? '<p class="notice">每侧显示前 80 行，解决操作会处理完整文件。</p>' : ''}${file.hunks.map((h, i) => `<div class="hunk"><div class="hunk-label">冲突块 ${i + 1}<span>从第 ${h.start + 1} 行开始</span></div><div class="diff-pair"><section class="diff-side current"><div class="diff-label"><span class="dot-key"></span>当前分支 <code>${esc(h.currentLabel)}</code></div>${codeLines(h.current)}</section><section class="diff-side incoming"><div class="diff-label"><span class="dot-key"></span>传入分支 <code>${esc(h.incomingLabel)}</code></div>${codeLines(h.incoming)}</section></div></div>`).join('')}</div>${file.hunks.length ? strategies(demo) : ''}`;
+function strategies(): string {
+    return `<div class="resolution-bar"><span>解决方式</span><div class="strategies">${Object.entries(strategyNames).map(([key, name], i) => button('resolve', `${name}<kbd>${i + 1}</kbd>`, key === 'ai' ? 'primary strategy' : 'secondary strategy', `data-strategy="${key}"`)).join('')}</div></div><p class="micro">解决方式作用于整个文件。先打开完整差异预览；确认后备份、写回并暂存。AI 草拟使用本地规则，请检查结果。</p>`;
+}
+function conflictLines(text: string, start: number, tone: 'remove' | 'add'): string {
+    return `<div class="conflict-lines ${tone}">${text.split('\n').map((line, i) => `<div class="conflict-row"><span class="conflict-mark" aria-hidden="true">${tone === 'remove' ? '−' : '+'}</span><span class="line-number">${start + i}</span><code>${esc(line) || ' '}</code></div>`).join('')}</div>`;
+}
+export function renderConflict(file: ConflictFile): string {
+    return `<div class="code-surface"><div class="file-heading">${icon('file')}<code>${esc(file.path)}</code><span class="badge warning">${esc(file.status)}</span></div>${file.note ? `<p class="notice">${esc(file.note)}</p>` : ''}${file.truncated ? '<p class="notice">每侧显示前 80 行，解决操作会处理完整文件。</p>' : ''}${file.hunks.map((h, i) => `<div class="hunk"><div class="hunk-label">冲突块 ${i + 1}<span>从第 ${h.start + 1} 行开始</span></div>${contextLines(h.before, h.beforeStart, 'before')}<div class="conflict-block"><section class="conflict-side current"><div class="conflict-label"><span class="dot-key"></span>当前分支 <code>${esc(h.currentLabel)}</code></div>${conflictLines(h.current, h.currentStart ?? h.start + 2, 'remove')}</section><section class="conflict-side incoming"><div class="conflict-label"><span class="dot-key"></span>传入分支 <code>${esc(h.incomingLabel)}</code></div>${conflictLines(h.incoming, h.incomingStart ?? h.start + 2, 'add')}</section></div>${contextLines(h.after, h.afterStart, 'after')}</div>`).join('')}</div>${file.hunks.length ? strategies() : ''}`;
+}
+function splitWorkingPath(value: string): [string, string] {
+    const index = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'));
+    return index < 0 ? ['', value] : [value.slice(0, index + 1), value.slice(index + 1)];
+}
+function workingMark(status: string): [string, string] {
+    if (/新增|未跟踪|添加/.test(status)) return ['A', 'added'];
+    if (/删除/.test(status)) return ['D', 'deleted'];
+    if (/重命名/.test(status)) return ['R', 'renamed'];
+    if (/复制/.test(status)) return ['C', 'copied'];
+    if (/修改|类型/.test(status)) return ['M', 'modified'];
+    return ['·', 'unknown'];
 }
 export function renderWorkingTree(snapshot: Snapshot, disabled: boolean): string {
     const files = snapshot.workingTreeFiles;
     if (!files) return snapshot.workingTreeCount
         ? `<div class="notice">未暂存更改列表尚未加载。${button('refresh', '刷新', 'text-button')}</div>` : '';
     const untracked = files.filter(file => file.untracked).length;
-    return `<div class="working-changes"><header><h3>未暂存更改 <span class="badge">${files.length}</span></h3><span class="micro">${untracked ? `${untracked} 个新文件` : '相对暂存区'}</span></header>${files.length
-        ? `<ul class="working-list">${files.map(file => `<li>${button('open-working-change', `${icon('file')}<code>${esc(file.path)}</code>`, 'working-file text-button', `data-path="${esc(file.path)}" title="${file.untracked ? '打开新文件' : '查看未暂存差异'}" ${disabled ? 'disabled' : ''}`)}<span class="badge">${esc(file.status)}</span>${button('stage-working-change', '暂存', 'secondary small', `data-path="${esc(file.path)}" title="暂存该文件的完整工作区版本" ${disabled ? 'disabled' : ''}`)}</li>`).join('')}</ul>`
-        : '<p class="micro">没有未暂存更改。</p>'}</div>`;
-}
-export function checks(strategy?: Strategy): string {
-    return `<div class="checks">${demoCheck(strategy).map(c => `<div class="${c.ok ? 'ok' : 'failed'}"><span>${c.ok ? icon('check') : '!'}</span>${esc(c.label)}</div>`).join('')}</div>`;
-}
-export function renderDemoStage(state: DemoState): string {
-    switch (state.phase) {
-        case 'idle': return title('合并分支', '将结算功能合入 main', '两个分支修改了同一段结算逻辑。开始合并，查看冲突并审查结果。')
-            + `<div class="merge-comparison"><div><span class="micro">传入分支</span><strong>${icon('branch')}feature/checkout-flow</strong><p>新增可选折扣</p></div><span class="route-arrow">${icon('arrow')}</span><div><span class="micro">当前分支</span><strong>${icon('branch')}main</strong><p>修复 8% 税率</p></div></div><div class="action-row">${button('demo-start', `开始合并 ${icon('arrow')}`, 'primary')}<span class="micro">演示环境 · 不修改本地文件</span></div><div class="context-note"><span>这个工作台可以做什么</span><p>选择分支 → 查看冲突 → 解决并暂存 → 审查 diff → 确认提交</p></div>`;
-        case 'merging': return title('合并分支', '正在比较两条分支', 'feature/checkout-flow → main') + progress('正在合并') + '<p class="activity">检查 src/checkout.ts 的合并结果…</p>';
-        case 'conflict': return title('需要解决', '1 个文件存在冲突', '保留税率、折扣，或组合两边的修改。') + renderConflict({ path: 'src/checkout.ts', status: '双方修改', hunks: parseConflict(DEMO_CONFLICT) }, true) + button('copy', '复制冲突到聊天', 'text-button');
-        case 'resolving': return title('解决冲突', '正在生成合并结果', `已选择「${strategyNames[state.strategy!]}」`) + progress('正在解决') + `<div class="code-surface">${codeLines(demoResolved(state.strategy))}</div>`;
-        case 'checking': return title('检查结果', '检查两边的修改是否保留', '以下是演示检查，并未运行项目测试。') + progress('正在检查') + checks(state.strategy);
-        case 'reviewing': return title('审查与提交', '合并结果已暂存') + button('review-staged', '审查暂存改动', 'primary');
-        case 'committing': return title('提交中', '正在创建演示提交') + progress('创建提交');
-        case 'merged': return `<div class="success-heading">${icon('check')}</div>` + title('合并完成', '提交已创建', 'feature/checkout-flow 已合入 main。') + `<div class="commit-receipt">${icon('commit')}<code>e7b21aa</code><span>Merge feature/checkout-flow</span><span class="badge">演示</span></div>` + checks(state.strategy) + `<div class="actions">${button('demo-replay', '重新演示', 'secondary')}${button('inspect-commit', '查看提交 diff', 'primary', 'data-hash="e7b21aa"')}${button('create-pr', '创建 PR', 'text-button')}</div>`;
-    }
+    return `<div class="working-changes"><header><h3>未暂存更改<span class="working-count">${files.length}</span></h3>${untracked ? `<span class="micro working-hint">${untracked} 个新文件</span>` : ''}</header>${files.length
+        ? `<ul class="working-list">${files.map(file => {
+            const [directory, name] = splitWorkingPath(file.path);
+            const [mark, tone] = workingMark(file.status);
+            const openLabel = file.untracked ? `打开 ${esc(file.path)} 的新文件` : `查看 ${esc(file.path)} 的未暂存差异`;
+            return `<li><span class="file-mark ${tone}" aria-hidden="true" title="${esc(file.status)}">${mark}</span>${button('open-working-change', `<span class="working-path"><span class="path-dir">${esc(directory)}</span><span class="path-base">${esc(name)}</span></span>`, 'working-file', `data-path="${esc(file.path)}" title="${esc(file.path)}" aria-label="${openLabel}，状态：${esc(file.status)}" ${disabled ? 'disabled' : ''}`)}${button('stage-working-change', '暂存', 'working-stage', `data-path="${esc(file.path)}" title="暂存该文件" aria-label="暂存 ${esc(file.path)}" ${disabled ? 'disabled' : ''}`)}</li>`;
+        }).join('')}</ul>`
+        : `<p class="working-empty">${icon('check')}工作区干净</p>`}</div>`;
 }
 export function livePhase(snapshot: Snapshot | null, state: LiveState): string {
     if (!snapshot) return 'empty';
@@ -125,7 +130,7 @@ export function livePhase(snapshot: Snapshot | null, state: LiveState): string {
     return snapshot.mergeHead ? 'ready' : 'idle';
 }
 export function renderLiveStage(snapshot: Snapshot | null, state: LiveState, selectedPath?: string): string {
-    if (!snapshot) return title('仓库', '打开一个 Git 仓库', '在编辑器中打开本地仓库，或先通过演示体验工作流。') + button('run-demo', '运行演示', 'primary');
+    if (!snapshot) return title('仓库', '打开一个 Git 仓库', '在编辑器中打开本地仓库后，这里会显示提交历史。') + `<div class="actions">${button('open-scm', '打开 Source Control', 'primary')}${button('refresh', '刷新', 'secondary')}</div>`;
     const s = snapshot;
     if (state.kind === 'error') return title('操作未完成', '需要处理一个问题', esc(state.text)) + `<div class="actions">${button('live-back', '返回工作流', 'primary')}${button('open-scm', '打开 Source Control', 'secondary')}</div>`;
     if (state.kind === 'committed') return `<div class="success-heading">${icon('check')}</div>` + title('提交完成', '改动已提交到本地', '可以继续查看提交，或返回工作区。') + `<div class="commit-receipt">${icon('commit')}<code>${esc(state.hash?.slice(0, 7) || 'HEAD')}</code><span>${esc(s.headName)}</span><span class="badge">本地提交</span></div><div class="actions">${state.hash ? button('inspect-commit', '查看提交 diff', 'primary', `data-hash="${esc(state.hash)}"`) : ''}${button('live-back', '返回工作流', 'secondary')}</div>`;
@@ -137,7 +142,7 @@ export function renderLiveStage(snapshot: Snapshot | null, state: LiveState, sel
         const file = s.conflicts.find(f => f.path === selectedPath) || s.conflicts[0];
         return rebaseNote + title('需要解决', `${s.conflicts.length} 个文件存在冲突`, '解决后可以在本工作台审查暂存改动并提交。')
             + `<div class="file-tabs">${s.conflicts.map(f => button('select-conflict', `${icon('file')}${esc(f.path)}`, f.path === file.path ? 'active' : '', `data-path="${esc(f.path)}"`)).join('')}</div>`
-            + renderConflict(file, false) + `<div class="actions">${button('open-conflict-diff', '查看官方差异', 'secondary')}${!file.nativeOnly ? button('open-merge-editor', '打开官方合并编辑器', 'secondary') + button('stage', '暂存当前文件', 'secondary') : ''}${button('native-stage-conflicts', '官方暂存冲突（全部）', 'secondary')}${button('copy', '复制冲突到聊天', 'text-button')}${s.mergeHead && !s.rebasing ? button('abort-ask', '中止合并', 'text-button danger-text', s.canAbort ? '' : 'disabled title="请运行 git merge --abort"') : ''}</div>`;
+            + renderConflict(file) + `<div class="actions">${button('open-conflict-diff', '查看官方差异', 'secondary')}${!file.nativeOnly ? button('open-merge-editor', '打开官方合并编辑器', 'secondary') + button('stage', '暂存当前文件', 'secondary') : ''}${button('native-stage-conflicts', '官方暂存冲突（全部）', 'secondary')}${button('copy', '复制冲突到聊天', 'text-button')}${s.mergeHead && !s.rebasing ? button('abort-ask', '中止合并', 'text-button danger-text', s.canAbort ? '' : 'disabled title="请运行 git merge --abort"') : ''}</div>`;
     }
     if (state.kind === 'confirm') return title('合并分支', '确认合并到当前分支', `<code>${esc(state.ref)}</code> → <code>${esc(s.headName)}</code>。无冲突时 Git 可能直接快进或创建合并提交。`)
         + (s.workingTreeCount || s.stagedCount ? '<p class="notice">仓库中有未提交改动，请确认后继续。</p>' : '') + `<div class="actions">${button('merge-go', '确认合并', 'primary')}${button('live-back', '返回', 'secondary')}</div>`;
@@ -187,16 +192,15 @@ export interface ReviewState {
     dirty: boolean;
     committing: boolean;
 }
-export function renderReview(state: ReviewState, demo: boolean, strategy?: Strategy): string {
+export function renderReview(state: ReviewState): string {
     const r = state.data;
     if (!r) return title('审查与提交', state.error ? '无法读取暂存区' : '读取暂存改动…', esc(state.error || '')) + (state.error ? button('review-staged', '重新加载', 'secondary') : progress('读取暂存区'));
     const disabled = state.loading || state.committing;
     const canCommit = !disabled && !state.error && !r.blocked && !!state.draft.trim();
-    return title('审查与提交', `${r.merge ? '审查合并结果' : '审查暂存改动'}`, `${r.files.length} 个文件将提交到 <code>${esc(r.headName)}</code>${demo ? ' · 演示环境' : ''}`)
-        + (demo ? `<div class="demo-checks">${checks(strategy)}<p class="micro">预设检查 · 非真实测试${demoCheck(strategy).some(c => !c.ok) ? ' · 当前策略有问题，请检查后决定是否继续演示。' : ''}</p></div>` : '')
+    return title('审查与提交', `${r.merge ? '审查合并结果' : '审查暂存改动'}`, `${r.files.length} 个文件将提交到 <code>${esc(r.headName)}</code>`)
         + (state.error ? `<div class="notice error" role="alert">${esc(state.error)} ${button('review-staged', '重新加载审查', 'secondary small')}</div>` : '')
         + (r.blocked ? `<p class="notice">${esc(r.blocked)}</p>` : '')
         + `<div class="review-grid">${fileList(r.files, r.path, 'review-file', disabled)}<section class="diff-view"><div class="file-heading">${icon('file')}<code>${esc(r.path || (r.merge ? '无文件差异的合并提交' : '暂存区为空'))}</code>${diffStats(r.patch)}${button('review-staged', icon('refresh'), 'icon-button', `aria-label="重新加载审查" ${disabled ? 'disabled' : ''}`)}</div>${state.loading ? progress('读取 diff') : ''}${r.truncated ? '<p class="notice">超过显示上限，diff 已截断。提交仍包含完整暂存内容。</p>' : ''}${renderPatch(r.patch)}</section></div>`
-        + (demo ? '' : '<p class="notice">提交会遵循编辑器的分支保护、诊断、签名和保存设置。若在官方提示中选择保存并提交，将按你的选择更新暂存内容；取消后请重新加载审查。不会执行提交后的推送或同步。</p>')
-        + `<section class="commit-composer" aria-label="提交说明"><div class="composer-heading"><label for="commit-message">提交说明</label><span>${demo ? '模拟提交' : '本地提交'}</span></div><textarea id="commit-message" data-action="commit-message" rows="3" maxlength="20000" placeholder="简要说明这次改动的目的…" ${state.committing ? 'disabled' : ''}>${esc(state.draft)}</textarea><div class="commit-bottom"><div><strong>${r.files.length} 个文件 · ${esc(r.headName)}</strong><p>${r.unstagedCount ? `${r.unstagedCount} 项未暂存改动不会包含在此次提交中。` : '仅提交当前暂存区。'}${demo ? ' 不修改本地仓库。' : ''}</p></div>${button('commit-staged', `${state.committing ? '正在提交…' : demo ? '确认演示提交' : '确认提交'} ${icon('commit')}`, 'primary commit-button', canCommit ? '' : 'disabled')}</div></section>`;
+        + '<p class="notice">提交会遵循编辑器的分支保护、诊断、签名和保存设置。若在官方提示中选择保存并提交，将按你的选择更新暂存内容；取消后请重新加载审查。不会执行提交后的推送或同步。</p>'
+        + `<section class="commit-composer" aria-label="提交说明"><div class="composer-heading"><label for="commit-message">提交说明</label><span>本地提交</span></div><textarea id="commit-message" data-action="commit-message" rows="3" maxlength="20000" placeholder="简要说明这次改动的目的…" ${state.committing ? 'disabled' : ''}>${esc(state.draft)}</textarea><div class="commit-bottom"><div><strong>${r.files.length} 个文件 · ${esc(r.headName)}</strong><p>${r.unstagedCount ? `${r.unstagedCount} 项未暂存改动不会包含在此次提交中。` : '仅提交当前暂存区。'}</p></div>${button('commit-staged', `${state.committing ? '正在提交…' : '确认提交'} ${icon('commit')}`, 'primary commit-button', canCommit ? '' : 'disabled')}</div></section>`;
 }

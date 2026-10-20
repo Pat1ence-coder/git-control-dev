@@ -99,7 +99,6 @@ export class GitService implements vscode.Disposable {
     get repository(): Repository | undefined {
         return this.api?.repositories.find(r => this.selected && samePath(r.rootUri.fsPath, this.selected)) || (vscode.workspace.workspaceFolders?.[0] ? this.api?.getRepository(vscode.workspace.workspaceFolders[0].uri) : undefined) || this.api?.repositories[0];
     }
-    hasRepository(): boolean { return !!this.repository; }
     async select(id: string): Promise<void> { if (!this.api?.repositories.some(r => samePath(r.rootUri.fsPath, id)))
         throw new UserFacingError('仓库已关闭，请刷新。'); this.selected = id; await this.state.update('repo', id); }
     private requireRepo(): Repository { const repo = this.repository; if (!repo)

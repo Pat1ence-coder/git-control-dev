@@ -10,7 +10,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const git = new GitService(context.workspaceState, output, safety);
     const operation = { busy: false };
     const workbench = new GenerativeGitViewProvider(context, git, operation);
-    const sidebar = new GenerativeGitLauncher(context.extensionUri, () => workbench.openWorkbench(), () => workbench.runDemo());
+    const sidebar = new GenerativeGitLauncher(context.extensionUri, () => workbench.openWorkbench());
     const safeCommand = (action: () => Promise<void>) => async () => {
         try { await action(); }
         catch (error) { await vscode.window.showErrorMessage(describeGitError(error)); }
@@ -24,7 +24,6 @@ export function activate(context: vscode.ExtensionContext): void {
         })),
         vscode.window.registerWebviewViewProvider('generativeGit.main', sidebar, { webviewOptions: { retainContextWhenHidden: true } }),
         vscode.commands.registerCommand('generativeGit.open', () => workbench.openWorkbench()),
-        vscode.commands.registerCommand('generativeGit.refresh', safeCommand(() => workbench.refresh())),
-        vscode.commands.registerCommand('generativeGit.runDemo', safeCommand(() => workbench.runDemo())));
+        vscode.commands.registerCommand('generativeGit.refresh', safeCommand(() => workbench.refresh())));
     void git.init();
 }

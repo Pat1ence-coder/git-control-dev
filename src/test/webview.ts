@@ -2,12 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
-import { demoGraph } from '../demo/scenario';
-import type { ToHost, ToWebview, Snapshot } from '../shared/protocol';
-import { demoReview } from '../demo/scenario';
-// Executes the actual browser bundle with a minimal DOM/message/timer adapter.
+import type { ToHost, ToWebview, Snapshot, StagedReview, ConflictFile } from '../shared/protocol';
+
+// Executes the actual browser bundle with a minimal DOM/message adapter.
 // Verifies controller behavior; visual layout still needs a real browser/host.
-export function harness(live = false, onPost?: (message: ToHost) => void) {
+export function harness() {
     class Element {
         innerHTML = '';
         textContent = '';
@@ -32,16 +31,10 @@ export function harness(live = false, onPost?: (message: ToHost) => void) {
     const nodes = new Map<string, Element>();
     const win = new Element();
     const posted: any[] = [];
-    let now = 0, timerId = 0;
-    const timers = new Map<number, {
-        at: number;
-        fn: () => void;
-    }>();
     const get = (id: string) => { if (!nodes.has(id))
         nodes.set(id, new Element()); return nodes.get(id)!; };
     const context = { window: Object.assign(win, { matchMedia: () => ({ matches: false }) }), document: { getElementById: get, activeElement: null }, navigator: { clipboard: { writeText: async () => { } } }, HTMLSelectElement: Select, console,
-        setTimeout: (fn: () => void, ms: number) => { const id = ++timerId; timers.set(id, { at: now + ms, fn }); return id; }, clearTimeout: (id: number) => timers.delete(id),
-        ...(live ? { acquireVsCodeApi: () => ({ postMessage: (message: ToHost) => { posted.push(message); onPost?.(message); } }) } : {}) };
+        acquireVsCodeApi: () => ({ postMessage: (message: ToHost) => { posted.push(message); } }) };
     vm.runInNewContext(readFileSync('dist/webview.js', 'utf8'), context);
     return {
         get, posted,
@@ -49,57 +42,42 @@ export function harness(live = false, onPost?: (message: ToHost) => void) {
         click(action: string, data: Record<string, string> = {}) { const el = new Element(); el.dataset = { action, ...data }; get('app').listeners.get('click')!({ target: el }); },
         input(value: string) { const el = Object.assign(new Element(), { value, tagName: 'TEXTAREA' }); el.dataset.action = 'commit-message'; get('app').listeners.get('input')!({ target: el }); },
         key(key: string) { win.listeners.get('keydown')!({ key, target: new Element(), preventDefault() { } }); },
-        message(message: ToWebview) { win.listeners.get('message')!({ data: message }); },
-        advance(ms: number) { const target = now + ms; for (;;) {
-            const next = [...timers].sort((a, b) => a[1].at - b[1].at)[0];
-            if (!next || next[1].at > target)
-                break;
-            now = next[1].at;
-            timers.delete(next[0]);
-            next[1].fn();
-        } now = target; }
+        message(message: ToWebview) { win.listeners.get('message')!({ data: message }); }
     };
 }
-test('webview: all four strategies run in one surface, including failing demo checks', () => {
-    for (const strategy of ['current', 'incoming', 'both', 'ai']) {
-        const ui = harness();
-        const stage = ui.get('stage');
-        assert.equal(ui.phase(), 'idle');
-        ui.click('demo-start');
-        assert.equal(ui.phase(), 'merging');
-        ui.advance(1600);
-        assert.equal(ui.phase(), 'conflict');
-        assert.equal(stage.innerHTML, '');
-        ui.click('show-conflicts');
-        assert.match(stage.innerHTML, /src\/checkout.ts/);
-        ui.click('demo-resolve', { strategy });
-        assert.equal(ui.phase(), 'resolving');
-        ui.advance(720);
-        assert.equal(ui.phase(), 'checking');
-        ui.advance(1300);
-        assert.equal(ui.phase(), 'reviewing');
-        assert.equal(stage.innerHTML.includes('class="failed"'), strategy !== 'ai');
-        ui.advance(10000);
-        assert.equal(ui.phase(), 'reviewing', 'demo must wait for an explicit commit');
-        ui.click('commit-staged');
-        assert.equal(ui.phase(), 'committing');
-        ui.advance(850);
-        assert.equal(ui.phase(), 'merged');
-        assert.equal(ui.get('stage'), stage);
-        ui.click('review-staged'); // completed demos keep the task compact
-        assert.equal(ui.phase(), 'merged');
-        ui.click('inspect-commit', { hash: 'e7b21aa' });
-        assert.match(stage.innerHTML, /COMMIT \/ e7b21aa/);
-        ui.click('close-detail');
-        assert.match(ui.get('task-controls').innerHTML, /演示提交已完成/);
-    }
+
+const fixtureGraph = (): Snapshot['graph'] => ({
+    laneCount: 1,
+    nodes: [{ id: 'a1f3c09', hash: 'a1f3c09', title: 'fix: 补上结算税率', lane: 0, row: 0, badges: ['main'], role: 'commit', tip: true }],
+    edges: []
 });
+const makeSnapshot = (overrides: Partial<Snapshot> = {}): Snapshot => ({
+    repoId: '/repo', repoName: 'repo', repositories: [{ id: '/repo', name: 'repo' }], headName: 'main', headHash: 'a1f3c09',
+    branches: ['main'], conflicts: [], workingTreeCount: 0, workingTreeFiles: [], stagedCount: 0,
+    mergeHead: false, rebasing: false, canMerge: true, canAbort: true, graph: fixtureGraph(), ...overrides
+});
+const makeReview = (overrides: Partial<StagedReview> = {}): StagedReview => ({
+    repoId: '/repo', headName: 'main', token: 'a'.repeat(64), merge: false,
+    files: [{ path: 'src/edit.ts', status: '已修改' }], path: 'src/edit.ts',
+    patch: '--- a/src/edit.ts\n+++ b/src/edit.ts\n@@ -1 +1 @@\n-old\n+new',
+    truncated: false, suggestedMessage: 'chore: update', unstagedCount: 0, ...overrides
+});
+const makeConflict = (): ConflictFile => ({
+    path: 'src/checkout.ts', status: '双方修改',
+    hunks: [{
+        start: 9, end: 15, current: 'const total = 1;', incoming: 'const total = 2;',
+        currentLabel: 'HEAD', incomingLabel: 'feature', currentStart: 12, incomingStart: 14,
+        before: ['export function total() {', '  // shared context'], beforeStart: 10,
+        after: ['}'], afterStart: 16
+    }]
+});
+
 test('webview: review drafts survive refresh and failed commit; submit is explicit and single-flight', () => {
-    const ui = harness(true);
-    const snapshot: Snapshot = { repoId: '/repo', repoName: 'repo', repositories: [{ id: '/repo', name: 'repo' }], headName: 'main', headHash: 'a1f3c09', branches: ['main'], conflicts: [], workingTreeCount: 1, stagedCount: 1, mergeHead: true, rebasing: false, canMerge: true, canAbort: true, graph: demoGraph('idle') };
-    ui.message({ type: 'hydrate', mode: 'live', snapshot, hasRepo: true });
+    const ui = harness();
+    const snapshot = makeSnapshot({ workingTreeCount: 1, stagedCount: 1, mergeHead: true });
+    ui.message({ type: 'hydrate', snapshot });
     ui.click('review-staged');
-    const review = { ...demoReview('ai'), repoId: '/repo', token: 'a'.repeat(64), unstagedCount: 1 };
+    const review = makeReview({ unstagedCount: 1 });
     ui.message({ type: 'staged-review', requestId: ui.posted.at(-1).requestId, review });
     assert.equal(ui.phase(), 'reviewing');
     assert.equal(ui.posted.filter(m => m.type === 'commit-staged').length, 0);
@@ -119,17 +97,17 @@ test('webview: review drafts survive refresh and failed commit; submit is explic
     ui.click('review-staged');
     ui.message({ type: 'staged-review', requestId: ui.posted.at(-1).requestId, review });
     ui.click('commit-staged');
-    ui.message({ type: 'snapshot', snapshot: { ...snapshot, stagedCount: 0, mergeHead: false, headHash: 'e7b21aa' }, hasRepo: true });
+    ui.message({ type: 'snapshot', snapshot: { ...snapshot, stagedCount: 0, mergeHead: false, headHash: 'e7b21aa' } });
     ui.message({ type: 'commit-result', ok: true, hash: 'e7b21aa' });
     assert.equal(ui.phase(), 'committed'); assert.match(ui.get('task-controls').innerHTML, /改动已提交到本地/);
 });
 test('webview: changed index invalidates review and stale review responses are ignored', () => {
-    const ui = harness(true);
-    const snapshot: Snapshot = { repoId: '/repo', repoName: 'repo', repositories: [], headName: 'main', branches: [], conflicts: [], workingTreeCount: 0, stagedCount: 1, mergeHead: false, rebasing: false, canMerge: true, canAbort: true, graph: demoGraph('idle') };
-    ui.message({ type: 'hydrate', mode: 'live', snapshot, hasRepo: true });
+    const ui = harness();
+    const snapshot = makeSnapshot({ stagedCount: 1 });
+    ui.message({ type: 'hydrate', snapshot });
     ui.click('review-staged'); const requestId = ui.posted.at(-1).requestId;
-    ui.message({ type: 'staged-review', requestId, review: { ...demoReview(), repoId: '/repo' } });
-    ui.message({ type: 'snapshot', snapshot: { ...snapshot, stagedCount: 2 }, hasRepo: true });
+    ui.message({ type: 'staged-review', requestId, review: makeReview() });
+    ui.message({ type: 'snapshot', snapshot: { ...snapshot, stagedCount: 2 } });
     ui.click('commit-staged');
     assert.equal(ui.posted.filter(m => m.type === 'commit-staged').length, 0);
     assert.match(ui.get('stage').innerHTML, /重新加载审查/);
@@ -137,17 +115,15 @@ test('webview: changed index invalidates review and stale review responses are i
     assert.ok(!ui.get('stage').innerHTML.includes('stale response'));
 });
 test('unstaged file list is visible with staged changes and refreshes after single-file staging', () => {
-    const ui = harness(true);
-    const snapshot: Snapshot = {
-        repoId: '/repo', repoName: 'repo', repositories: [], headName: 'main', branches: ['main'],
-        conflicts: [], workingTreeCount: 2, stagedCount: 1, mergeHead: false,
-        rebasing: false, canMerge: true, canAbort: true, graph: demoGraph('idle'),
+    const ui = harness();
+    const snapshot = makeSnapshot({
+        workingTreeCount: 2, stagedCount: 1,
         workingTreeFiles: [
             { path: 'src/edit.ts', status: '已修改', untracked: false },
             { path: 'new <&>.txt', status: '未跟踪', untracked: true }
         ]
-    };
-    ui.message({ type: 'hydrate', mode: 'live', snapshot, hasRepo: true });
+    });
+    ui.message({ type: 'hydrate', snapshot });
     assert.match(ui.get('working-changes').innerHTML, /未暂存更改/);
     assert.match(ui.get('working-changes').innerHTML, /src\/edit.ts/);
     assert.match(ui.get('working-changes').innerHTML, /new &lt;&amp;&gt;\.txt/);
@@ -161,41 +137,25 @@ test('unstaged file list is visible with staged changes and refreshes after sing
     assert.equal(ui.posted.at(-1).repoId, '/repo');
     ui.click('stage-working-change', { path: 'new <&>.txt' });
     assert.equal(ui.posted.filter(m => m.type === 'stage-working-change').length, 1, 'double-click blocked');
-    ui.message({ type: 'snapshot', hasRepo: true, snapshot: { ...snapshot, workingTreeCount: 1, stagedCount: 2, workingTreeFiles: snapshot.workingTreeFiles!.slice(0, 1) } });
+    ui.message({ type: 'snapshot', snapshot: { ...snapshot, workingTreeCount: 1, stagedCount: 2, workingTreeFiles: snapshot.workingTreeFiles!.slice(0, 1) } });
     ui.message({ type: 'live-result', kind: 'staged', text: '已暂存' });
     assert.match(ui.get('working-changes').innerHTML, /src\/edit.ts/);
     assert.ok(!ui.get('working-changes').innerHTML.includes('new &lt;'));
     assert.equal(ui.posted.filter(m => m.type === 'commit-staged').length, 0);
-    ui.click('mode-demo');
-    assert.equal(ui.get('working-changes').innerHTML, '', 'demo must not leak real file paths');
 });
-test('webview: Escape cancels demo timers and shortcuts respect commit inspection', () => {
+test('webview: live actions, busy guard and stale detail responses', () => {
     const ui = harness();
-    ui.click('demo-start');
-    ui.advance(1600);
-    ui.click('show-conflicts');
-    ui.click('inspect-commit', { hash: 'a1f3c09' });
-    ui.key('4');
-    assert.equal(ui.phase(), 'conflict');
-    ui.key('Escape');
-    ui.key('4');
-    assert.equal(ui.phase(), 'resolving');
-    ui.key('Escape');
-    ui.advance(10000);
-    assert.equal(ui.phase(), 'idle');
-});
-test('webview: live actions, busy mode guard and stale detail responses', () => {
-    const ui = harness(true);
     assert.equal(ui.posted[0].type, 'ready');
-    const snapshot: Snapshot = { repoId: '/repo', repoName: 'repo', repositories: [{ id: '/repo', name: 'repo' }], headName: 'main', branches: ['main', 'feature'], conflicts: [], workingTreeCount: 0, stagedCount: 0, mergeHead: false, rebasing: false, canMerge: true, canAbort: true, graph: demoGraph('idle') };
-    ui.message({ type: 'hydrate', mode: 'live', snapshot, hasRepo: true });
+    const snapshot = makeSnapshot({ branches: ['main', 'feature'], workingTreeCount: 0, workingTreeFiles: [] });
+    ui.message({ type: 'hydrate', snapshot });
     ui.click('merge-ask', { ref: 'feature' });
     assert.equal(ui.phase(), 'confirm');
     ui.click('merge-go');
     assert.equal(ui.phase(), 'merging');
     assert.equal(ui.posted.at(-1).type, 'merge');
-    ui.click('mode-demo');
+    ui.click('review-staged');
     assert.equal(ui.phase(), 'merging');
+    assert.equal(ui.posted.filter(m => m.type === 'review-staged').length, 0);
     ui.message({ type: 'live-result', kind: 'error', text: 'merge failed' });
     assert.equal(ui.phase(), 'error');
     ui.key('Escape');
@@ -205,7 +165,7 @@ test('webview: live actions, busy mode guard and stale detail responses', () => 
     ui.click('close-detail');
     ui.message({ type: 'commit-detail', requestId: old, error: 'stale error' });
     assert.ok(!ui.get('stage').innerHTML.includes('stale error'));
-    ui.message({ type: 'snapshot', snapshot: { ...snapshot, mergeHead: true }, hasRepo: true });
+    ui.message({ type: 'snapshot', snapshot: { ...snapshot, mergeHead: true } });
     assert.equal(ui.phase(), 'ready');
     ui.click('abort-ask');
     assert.equal(ui.phase(), 'confirm');
@@ -213,11 +173,11 @@ test('webview: live actions, busy mode guard and stale detail responses', () => 
     assert.equal(ui.phase(), 'ready');
     assert.ok(!ui.posted.some(m => m.type === 'abort-merge'));
 });
-
 test('task card: conflict peek and Escape preserve the workflow until an explicit resolution', () => {
-    const ui = harness(true);
-    ui.message({ type: 'hydrate', mode: 'demo', hasRepo: true, snapshot: null });
-    ui.click('demo-start'); ui.advance(1600);
+    const ui = harness();
+    const snapshot = makeSnapshot({ conflicts: [makeConflict()], mergeHead: true, canAbort: true });
+    ui.message({ type: 'hydrate', snapshot });
+    assert.equal(ui.phase(), 'conflict');
     assert.equal(ui.get('stage').innerHTML, '');
     ui.click('peek-conflicts');
     assert.match(ui.get('task-controls').innerHTML, /id="conflict-popover"/);
@@ -228,25 +188,40 @@ test('task card: conflict peek and Escape preserve the workflow until an explici
     assert.ok(!ui.get('task-controls').innerHTML.includes('id="conflict-popover"'));
     ui.click('show-conflicts');
     assert.equal(ui.get('app').dataset.expanded, 'true');
+    assert.match(ui.get('stage').innerHTML, /hunk-context/);
+    assert.match(ui.get('stage').innerHTML, /shared context/);
     ui.key('Escape');
     assert.equal(ui.phase(), 'conflict');
     assert.equal(ui.get('stage').innerHTML, '');
-    ui.key('4'); // Hidden resolution actions must not run from a collapsed overview.
+    ui.key('4');
     assert.equal(ui.phase(), 'conflict');
+    assert.equal(ui.posted.filter(m => m.type === 'resolve').length, 0);
     ui.click('show-conflicts'); ui.key('4');
     assert.equal(ui.phase(), 'resolving');
-    assert.equal(ui.posted.filter(m => ['merge', 'resolve', 'commit-staged'].includes(m.type)).length, 0);
+    assert.equal(ui.posted.filter(m => m.type === 'resolve').length, 1);
+    assert.equal(ui.posted.at(-1).path, 'src/checkout.ts');
+    assert.equal(ui.posted.at(-1).strategy, 'ai');
 });
-
 test('task card: collapsing review preserves the draft and never commits implicitly', () => {
     const ui = harness();
-    ui.click('demo-start'); ui.advance(1600); ui.click('show-conflicts');
-    ui.click('demo-resolve', { strategy: 'ai' }); ui.advance(2020);
+    const snapshot = makeSnapshot({ stagedCount: 1 });
+    ui.message({ type: 'hydrate', snapshot });
+    ui.click('review-staged');
+    ui.message({ type: 'staged-review', requestId: ui.posted.at(-1).requestId, review: makeReview() });
     ui.input('Keep this review message');
     ui.click('collapse-task');
-    assert.equal(ui.phase(), 'reviewing');
+    assert.equal(ui.phase(), 'idle');
     assert.equal(ui.get('stage').innerHTML, '');
     ui.click('review-staged');
+    ui.message({ type: 'staged-review', requestId: ui.posted.at(-1).requestId, review: makeReview({ suggestedMessage: 'must not replace draft' }) });
     assert.match(ui.get('stage').innerHTML, /Keep this review message/);
     assert.equal(ui.phase(), 'reviewing');
+    assert.equal(ui.posted.filter(m => m.type === 'commit-staged').length, 0);
+});
+test('empty repository offers Source Control instead of a demo entry', () => {
+    const ui = harness();
+    ui.message({ type: 'hydrate', snapshot: null });
+    assert.equal(ui.phase(), 'empty');
+    assert.match(ui.get('task-controls').innerHTML, /打开 Source Control/);
+    assert.ok(!ui.get('task-controls').innerHTML.includes('运行演示'));
 });

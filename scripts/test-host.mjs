@@ -45,7 +45,6 @@ try {
     git('config', 'commit.gpgSign', 'false'); // Editor setting must be the source of -S.
     await mkdir(path.join(root, '.vscode'));
     await writeFile(path.join(root, '.vscode/settings.json'), JSON.stringify({
-        'generativeGit.defaultMode': 'demo',
         'git.enableCommitSigning': true, 'git.alwaysSignOff': true,
         'git.postCommitCommand': 'push', 'git.promptToSaveFilesBeforeCommit': 'never',
         'git.enableSmartCommit': true, 'git.useEditorAsCommitInput': false,

@@ -24,7 +24,16 @@ export function parseConflict(text: string): Hunk[] {
         }
         if (end < 0)
             continue;
-        result.push({ start, end, current: lines.slice(start + 1, base >= 0 ? base : divider).join('\n'), incoming: lines.slice(divider + 1, end).join('\n'), currentLabel: lines[start].slice(7).trim() || '当前', incomingLabel: lines[end].slice(7).trim() || '传入' });
+        // Context is display-only and bounded; it never participates in applyResolution.
+        let beforeIndex = Math.max(0, start - 3);
+        for (let k = start - 1; k >= beforeIndex; k--) {
+            if (/^(?:<{7}|={7}|>{7}|\|{7})(?: |$)/.test(lines[k])) { beforeIndex = k + 1; break; }
+        }
+        let afterEnd = Math.min(lines.length, end + 4);
+        for (let k = end + 1; k < afterEnd; k++) {
+            if (/^(?:<{7}|={7}|>{7}|\|{7})(?: |$)/.test(lines[k])) { afterEnd = k; break; }
+        }
+        result.push({ start, end, current: lines.slice(start + 1, base >= 0 ? base : divider).join('\n'), incoming: lines.slice(divider + 1, end).join('\n'), currentLabel: lines[start].slice(7).trim() || '当前', incomingLabel: lines[end].slice(7).trim() || '传入', currentStart: start + 2, incomingStart: divider + 2, before: lines.slice(beforeIndex, start), beforeStart: beforeIndex + 1, after: lines.slice(end + 1, afterEnd), afterStart: end + 2 });
         i = end;
     }
     return result;
