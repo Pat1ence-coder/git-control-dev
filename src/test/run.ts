@@ -159,6 +159,7 @@ test('GitService: real conflicts, resolution/staging, history diff, abort and wo
     git('checkout', 'main');
     await fs.writeFile(path.join(dir, 'file.ts'), 'current\n');
     git('commit', '-am', 'main');
+    git('update-ref', 'refs/remotes/origin/main', git('rev-parse', 'HEAD'));
     const changed = new host.EventEmitter<void>();
     const committed = new host.EventEmitter<void>();
     const uri = (p: string) => host.Uri.file(p) as any;
@@ -167,9 +168,11 @@ test('GitService: real conflicts, resolution/staging, history diff, abort and wo
     const repo: Repository = {
         rootUri: uri(dir), onDidCommit: committed.event, inputBox: { value: '' }, state: { refs: [], mergeChanges: [], workingTreeChanges: [], indexChanges: [], onDidChange: changed.event },
         async getConfig(key) { return git('config', '--get', key); },
-        async getRefs() {
-            return git('for-each-ref', '--format=%(refname:short) %(objectname)', 'refs/heads').split('\n').filter(Boolean).map(line => {
-                const [name, commit] = line.split(' '); return { type: 0, name, commit };
+        async getRefs(query?: { pattern?: string | string[] }) {
+            const pattern = Array.isArray(query?.pattern) ? query.pattern[0] : query?.pattern;
+            const prefix = pattern === 'refs/remotes/' ? 'refs/remotes' : 'refs/heads';
+            return git('for-each-ref', '--format=%(refname:short) %(objectname)', prefix).split('\n').filter(Boolean).map(line => {
+                const [name, commit] = line.split(' '); return { type: prefix === 'refs/remotes' ? 1 : 0, name, commit };
             });
         },
         async status() {
@@ -249,6 +252,23 @@ test('GitService: real conflicts, resolution/staging, history diff, abort and wo
             repo.getBranches = async () => refs;
             try { assert.deepEqual((await service.snapshot())?.branches, ['feature', 'main']); }
             finally { repo.getRefs = getRefs; repo.getBranches = undefined; }
+        });
+        await t.test('branch list and read-only preview keep HEAD unchanged', async () => {
+            const current = (await service.snapshot())!;
+            assert.equal(current.headName, 'main');
+            const local = current.branchList?.filter(branch => branch.local) ?? [];
+            assert.ok(local.some(branch => branch.current && branch.name === 'main'));
+            assert.ok(local.some(branch => branch.name === 'feature'));
+            assert.ok(current.branchList?.some(branch => !branch.local && branch.name === 'origin/main'));
+            const remotePreview = (await service.snapshot('refs/remotes/origin/main'))!;
+            assert.equal(remotePreview.preview?.name, 'origin/main');
+            assert.equal(remotePreview.headName, 'main');
+            const preview = (await service.snapshot('refs/heads/feature'))!;
+            assert.equal(preview.headName, 'main');
+            assert.equal(preview.preview?.ref, 'refs/heads/feature');
+            assert.ok((preview.preview?.graph.nodes.length ?? 0) > 0);
+            const same = (await service.snapshot('refs/heads/main'))!;
+            assert.equal(same.preview, undefined);
         });
         await t.test('root and regular commit diff', async () => {
             const root = await service.inspectCommit(rootHash);

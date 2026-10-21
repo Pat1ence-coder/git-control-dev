@@ -173,6 +173,35 @@ test('webview: live actions, busy guard and stale detail responses', () => {
     assert.equal(ui.phase(), 'ready');
     assert.ok(!ui.posted.some(m => m.type === 'abort-merge'));
 });
+test('branch browser previews local and remote branches without checkout', () => {
+    const ui = harness();
+    const branchList: NonNullable<Snapshot['branchList']> = [
+        { name: 'main', ref: 'refs/heads/main', local: true, current: true, ahead: 2, behind: 1 },
+        { name: 'feature/checkout-flow', ref: 'refs/heads/feature/checkout-flow', local: true, current: false },
+        { name: 'origin/main', ref: 'refs/remotes/origin/main', local: false, current: false }
+    ];
+    const snapshot = makeSnapshot({ branches: ['main', 'feature/checkout-flow'], branchList, workingTreeCount: 1 });
+    ui.message({ type: 'hydrate', snapshot });
+    ui.click('choose-branch');
+    const popover = ui.get('branch-popover').innerHTML;
+    assert.match(popover, /只读预览/);
+    assert.match(popover, /feature\/checkout-flow/);
+    assert.match(popover, /origin\/main/);
+    assert.match(popover, /↑2/);
+    assert.match(popover, /↓1/);
+    assert.match(popover, /预览/);
+    ui.click('preview-branch', { ref: 'refs/heads/feature/checkout-flow' });
+    const posted = ui.posted.at(-1) as any;
+    assert.equal(posted.type, 'preview-branch');
+    assert.equal(posted.ref, 'refs/heads/feature/checkout-flow');
+    ui.message({ type: 'snapshot', snapshot: { ...snapshot, preview: { ref: 'refs/heads/feature/checkout-flow', name: 'feature/checkout-flow', graph: fixtureGraph() } } });
+    assert.match(ui.get('graph').innerHTML, /branch-preview/);
+    assert.match(ui.get('graph').innerHTML, /不会切换 HEAD/);
+    assert.match(ui.get('graph').innerHTML, /feature\/checkout-flow/);
+    ui.click('preview-current');
+    assert.equal(ui.posted.at(-1).type, 'preview-current');
+    assert.ok(!ui.posted.some((message: any) => /checkout/.test(message.type)));
+});
 test('task card: conflict peek and Escape preserve the workflow until an explicit resolution', () => {
     const ui = harness();
     const snapshot = makeSnapshot({ conflicts: [makeConflict()], mergeHead: true, canAbort: true });

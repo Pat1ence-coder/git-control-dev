@@ -10,7 +10,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const git = new GitService(context.workspaceState, output, safety);
     const operation = { busy: false };
     const workbench = new GenerativeGitViewProvider(context, git, operation);
-    const sidebar = new GenerativeGitLauncher(context.extensionUri, () => workbench.openWorkbench());
+    const sidebar = new GenerativeGitLauncher(context.extensionUri, git, operation, () => workbench.openWorkbench());
     const safeCommand = (action: () => Promise<void>) => async () => {
         try { await action(); }
         catch (error) { await vscode.window.showErrorMessage(describeGitError(error)); }

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { realpath } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import type { GitAPI, GitExtension, Repository, Commit, Ref, Change } from './types';
-import type { Snapshot, ConflictFile, Strategy, CommitDetail, StagedReview } from '../shared/protocol';
+import type { Snapshot, ConflictFile, Strategy, CommitDetail, StagedReview, BranchInfo, BranchPreview } from '../shared/protocol';
 import { applyResolution, hasConflictMarkers, parseConflict } from './conflicts';
 import { layoutCommits, withPendingMerge } from './layout';
 import { resolveInside, samePath } from './paths';
@@ -100,15 +100,78 @@ export class GitService implements vscode.Disposable {
         return this.api?.repositories.find(r => this.selected && samePath(r.rootUri.fsPath, this.selected)) || (vscode.workspace.workspaceFolders?.[0] ? this.api?.getRepository(vscode.workspace.workspaceFolders[0].uri) : undefined) || this.api?.repositories[0];
     }
     async select(id: string): Promise<void> { if (!this.api?.repositories.some(r => samePath(r.rootUri.fsPath, id)))
-        throw new UserFacingError('仓库已关闭，请刷新。'); this.selected = id; await this.state.update('repo', id); }
+        throw new UserFacingError('仓库已关闭，请刷新。'); this.selected = id; await this.state.update('repo', id); this.changed.fire(); }
     private requireRepo(): Repository { const repo = this.repository; if (!repo)
         throw new UserFacingError('请先打开一个本地 Git 仓库。'); return repo; }
     async refresh(): Promise<void> { await this.repository?.status(); }
     private async localBranches(repo: Repository): Promise<Ref[]> {
+        // Prefer getBranches: it also carries ahead/behind, unlike getRefs.
+        try {
+            if (repo.getBranches) {
+                const refs = await repo.getBranches({ remote: false });
+                if (refs.length) return refs.filter(ref => ref.name && (ref.type === 0 || ref.type === undefined));
+            }
+        } catch { /* fall back to getRefs */ }
         // state.refs is deprecated and returns [] in recent hosts.
         const refs = repo.getRefs ? await repo.getRefs({ pattern: 'refs/heads/', sort: 'alphabetically' })
-            : repo.getBranches ? await repo.getBranches({ remote: false }) : repo.state.refs;
-        return refs.filter(ref => ref.type === 0 && ref.name);
+            : repo.state.refs;
+        return refs.filter(ref => ref.name && (ref.type === 0 || ref.type === undefined));
+    }
+    /** Read-only local/remote branch list used by the browser and preview. */
+    private async branchOverview(repo: Repository, locals: Ref[]): Promise<BranchInfo[]> {
+        const head = repo.state.HEAD?.name;
+        const local: BranchInfo[] = locals.filter(ref => ref.name).map(ref => ({
+            name: ref.name!, ref: `refs/heads/${ref.name}`, local: true, current: ref.name === head,
+            commit: ref.commit,
+            ahead: ref.ahead ?? (ref.name === head ? repo.state.HEAD?.ahead : undefined),
+            behind: ref.behind ?? (ref.name === head ? repo.state.HEAD?.behind : undefined)
+        }));
+        if (head && !local.some(branch => branch.current))
+            local.unshift({ name: head, ref: `refs/heads/${head}`, local: true, current: true, commit: repo.state.HEAD?.commit, ahead: repo.state.HEAD?.ahead, behind: repo.state.HEAD?.behind });
+        local.sort((a, b) => Number(b.current) - Number(a.current) || a.name.localeCompare(b.name));
+        const remotes = await this.remoteBranches(repo);
+        const seen = new Set(local.map(branch => branch.ref));
+        const remote: BranchInfo[] = [];
+        for (const ref of remotes) {
+            if (!ref.name) continue;
+            let name = ref.name.startsWith('refs/remotes/') ? ref.name.slice('refs/remotes/'.length) : ref.name;
+            if (!name || name.endsWith('/HEAD')) continue;
+            if (!name.includes('/') && typeof ref.remote === 'string' && ref.remote) name = `${ref.remote}/${name}`;
+            const refName = ref.name.startsWith('refs/remotes/') ? ref.name : `refs/remotes/${name}`;
+            if (seen.has(refName)) continue;
+            seen.add(refName);
+            remote.push({ name, ref: refName, local: false, current: false, commit: ref.commit });
+        }
+        remote.sort((a, b) => a.name.localeCompare(b.name));
+        return [...local, ...remote];
+    }
+    private async remoteBranches(repo: Repository): Promise<Ref[]> {
+        try {
+            if (repo.getRefs) {
+                const refs = await repo.getRefs({ pattern: 'refs/remotes/', sort: 'alphabetically' });
+                const remote = refs.filter(ref => ref.name && ref.type !== 0);
+                if (remote.length) return remote;
+            }
+        } catch { /* fall back to getBranches */ }
+        try {
+            if (repo.getBranches) return (await repo.getBranches({ remote: true })).filter(ref => ref.name && ref.type !== 0);
+        } catch { /* no remote branches */ }
+        return [];
+    }
+    private async branchPreview(repo: Repository, branch: BranchInfo, branchList: BranchInfo[]): Promise<BranchPreview | undefined> {
+        let commits: Commit[] = [];
+        try { commits = await repo.log({ maxEntries: 36, refNames: [branch.ref] }); }
+        catch {
+            try { commits = await repo.log({ maxEntries: 36, refNames: [branch.name] }); }
+            catch { return undefined; }
+        }
+        if (!commits.length) return undefined;
+        const head = branch.commit || commits[0].hash;
+        const graph = layoutCommits(commits.map(commit => ({
+            ...commit,
+            badges: branchList.filter(info => info.commit === commit.hash).map(info => info.name)
+        })), head);
+        return { ref: branch.ref, name: branch.name, graph };
     }
     private workingChanges(repo: Repository): Change[] {
         const changes: Change[] = [];
@@ -190,11 +253,12 @@ export class GitService implements vscode.Disposable {
             throw new UserFacingError('符号链接请在源代码管理中处理。');
         return uri;
     }
-    async snapshot(): Promise<Snapshot | null> {
+    async snapshot(previewRef?: string): Promise<Snapshot | null> {
         const repo = this.repository;
         if (!repo)
             return null;
         const branches = await this.localBranches(repo);
+        const branchList = await this.branchOverview(repo, branches);
         const workingTreeFiles = this.workingChanges(repo).map(change => ({
             path: path.relative(repo.rootUri.fsPath, change.uri.fsPath),
             status: statusLabel(change.status), untracked: change.status === 7
@@ -232,10 +296,12 @@ export class GitService implements vscode.Disposable {
             return file;
         }));
         const [mergeHash, mergeMessage] = await Promise.all([this.gitFile(repo, 'MERGE_HEAD'), this.gitFile(repo, 'MERGE_MSG')]);
+        const previewBranch = previewRef ? branchList.find(branch => branch.ref === previewRef) : undefined;
+        const preview = previewBranch && !previewBranch.current ? await this.branchPreview(repo, previewBranch, branchList) : undefined;
         let graph = layoutCommits(commits.map(c => ({ ...c, badges: branches.filter(r => r.commit === c.hash).map(r => r.name!) })), repo.state.HEAD?.commit);
         if (mergeHash && !conflicts.length && repo.state.HEAD?.commit)
             graph = withPendingMerge(graph, repo.state.HEAD.commit, mergeHash.split('\n')[0]);
-        return { repoId: repo.rootUri.fsPath, repoName: path.basename(repo.rootUri.fsPath), repositories: (this.api?.repositories || []).map(r => ({ id: r.rootUri.fsPath, name: path.basename(r.rootUri.fsPath) })), headName: repo.state.HEAD?.name || 'HEAD', headHash: repo.state.HEAD?.commit, branches: branches.map(r => r.name!), conflicts, workingTreeCount: workingTreeFiles.length, workingTreeFiles, stagedCount: repo.state.indexChanges.length, mergeHead: !!mergeHash, mergingRef: /Merge (?:remote-tracking )?branch '([^']+)'/.exec(mergeMessage)?.[1], rebasing: !!repo.state.rebaseCommit, canMerge: typeof repo.merge === 'function', canAbort: typeof repo.mergeAbort === 'function', graph };
+        return { repoId: repo.rootUri.fsPath, repoName: path.basename(repo.rootUri.fsPath), repositories: (this.api?.repositories || []).map(r => ({ id: r.rootUri.fsPath, name: path.basename(r.rootUri.fsPath) })), headName: repo.state.HEAD?.name || 'HEAD', headHash: repo.state.HEAD?.commit, branches: branches.map(r => r.name!), conflicts, workingTreeCount: workingTreeFiles.length, workingTreeFiles, stagedCount: repo.state.indexChanges.length, mergeHead: !!mergeHash, mergingRef: /Merge (?:remote-tracking )?branch '([^']+)'/.exec(mergeMessage)?.[1], rebasing: !!repo.state.rebaseCommit, canMerge: typeof repo.merge === 'function', canAbort: typeof repo.mergeAbort === 'function', graph, branchList, preview };
     }
     async merge(ref: string): Promise<{
         conflict: boolean;
