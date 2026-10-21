@@ -23,7 +23,8 @@ function hostHarness(options: { busy?: boolean; mergeError?: Error } = {}) {
         onDidChange: changes.event,
         whenReady: async () => { },
         startupProblem: undefined,
-        snapshot: async () => { calls.push('snapshot'); return snapshot; }
+        snapshot: async (previewRef?: string) => { calls.push(previewRef ? `snapshot:${previewRef}` : 'snapshot'); return snapshot; },
+        select: async (id: string) => { calls.push(`select:${id}`); changes.fire(); }
     }, {
         get(target, key) {
             if (key in target) return (target as Record<string | symbol, unknown>)[key];
@@ -106,5 +107,30 @@ test('removed demo messages are not addressable at the host bridge', async () =>
         await tick();
         assert.deepEqual(host.calls, []);
         assert.deepEqual(host.messages, []);
+    } finally { host.provider.dispose(); }
+});
+
+test('repository selection notifies the workbench through the shared change event', async () => {
+    const host = hostHarness();
+    try {
+        await host.send({ type: 'ready' }); await tick(); await tick();
+        host.messages.length = 0;
+        await host.send({ type: 'select-repo', repoId: '/repo2' }); await tick(); await tick();
+        assert.ok(host.calls.includes('select:/repo2'));
+        assert.ok(host.messages.some(m => m.type === 'snapshot'));
+    } finally { host.provider.dispose(); }
+});
+
+test('branch preview is read-only and refreshes without changing the repository', async () => {
+    const host = hostHarness();
+    try {
+        await host.send({ type: 'ready' }); await tick(); await tick();
+        host.messages.length = 0;
+        await host.send({ type: 'preview-branch', ref: 'refs/heads/feature' }); await tick(); await tick();
+        assert.ok(host.calls.includes('snapshot:refs/heads/feature'));
+        assert.ok(host.messages.some(message => message.type === 'snapshot'));
+        assert.ok(!host.calls.some(call => call.startsWith('select:')));
+        await host.send({ type: 'preview-current' }); await tick(); await tick();
+        assert.ok(host.calls.includes('snapshot'));
     } finally { host.provider.dispose(); }
 });

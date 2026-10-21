@@ -3,6 +3,9 @@ export interface Ref {
     type: number;
     name?: string;
     commit?: string;
+    remote?: string;
+    ahead?: number;
+    behind?: number;
 }
 export interface Commit {
     hash: string;

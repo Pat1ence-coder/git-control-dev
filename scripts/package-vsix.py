@@ -46,7 +46,10 @@ content_types = '''<?xml version="1.0" encoding="utf-8"?>
 </Types>'''
 ET.fromstring(manifest)
 ET.fromstring(content_types)
-output = root / f"{package['name']}-{package['version']}.vsix"
+output = root.parent / 'vsix' / f"{package['name']}-{package['version']}.vsix"
+output.parent.mkdir(parents=True, exist_ok=True)
+if output.exists():
+    raise SystemExit(f'{output} already exists; bump package.json version before packaging.')
 with ZipFile(output, 'w', ZIP_DEFLATED) as archive:
     archive.writestr('extension.vsixmanifest', manifest)
     archive.writestr('[Content_Types].xml', content_types)

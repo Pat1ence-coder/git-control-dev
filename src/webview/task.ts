@@ -57,9 +57,8 @@ export function renderTaskControls(view: TaskView): string {
     if (phase === 'error') return `<span class="task-status-line warning">${icon('warning')}操作没有完成</span>${button('live-back', '返回任务', 'secondary')}`;
     if (phase === 'confirm') return `<span class="task-status-line">${icon('branch')}请确认下面的操作</span>${button('live-back', '取消', 'text-button')}`;
     if (phase === 'empty') return `<span class="task-status-line">尚未打开本地仓库</span>${button('open-scm', '打开 Source Control', 'primary')}`;
-    if (view.branchPickerOpen) return `<span class="task-status-line">${icon('branch')}选择要合入的本地分支</span>${button('collapse-task', '收起', 'text-button')}`;
-    if (['ready', 'reviewing'].includes(phase) || !!s?.stagedCount) return `<span class="task-status-line">${icon('commit')}${s?.stagedCount || 0} 个文件等待审查</span>${button('review-staged', '审查并提交', 'primary')}`;
-    return `<span class="task-status-line">${icon('check')}${s?.workingTreeCount ? `${s.workingTreeCount} 项未暂存改动` : '工作区干净'}</span><div class="footer-actions">${button('review-staged', '查看暂存区', 'text-button')}${button('choose-branch', '合并分支', 'primary', s?.canMerge && !s.rebasing ? '' : 'disabled')}</div>`;
+    if (['ready', 'reviewing'].includes(phase) || !!s?.stagedCount) return `<span class="task-status-line">${icon('commit')}${s?.stagedCount || 0} 个文件等待审查</span><div class="footer-actions">${button('review-staged', '审查并提交', 'primary')}</div>`;
+    return `<span class="task-status-line">${icon('check')}${s?.workingTreeCount ? `${s.workingTreeCount} 项未暂存改动` : '工作区干净'}</span><div class="footer-actions">${button('review-staged', '查看暂存区', 'text-button')}</div>`;
 }
 export function taskExplanation(view: TaskView): string {
     if (view.phase === 'conflict') {
@@ -70,6 +69,6 @@ export function taskExplanation(view: TaskView): string {
     if (view.phase === 'committed') return '本地提交已完成。可以点击提交查看详情，本次操作没有执行推送。';
     if (!view.snapshot) return '打开一个本地 Git 仓库后，这里会显示提交历史、未暂存更改和合并操作。';
     if (!view.snapshot.canMerge)
-        return '点击提交查看历史。当前宿主缺少合并 API，可在终端执行 git merge 后回到这里处理冲突。';
-    return '点击提交查看历史，或选择分支开始合并。真实操作前会要求确认。';
+        return '点击提交查看历史；分支仍可只读预览。当前宿主缺少合并 API，请在终端执行 git merge 后回到这里处理冲突。';
+    return '点击提交查看历史，或打开分支预览提交图、发起合并。真实操作前会要求确认。';
 }

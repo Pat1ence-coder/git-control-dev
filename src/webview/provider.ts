@@ -7,6 +7,7 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
     private view?: vscode.WebviewView | vscode.WebviewPanel;
     private panel?: vscode.WebviewPanel;
     private ready = false;
+    private previewRef?: string;
     private queue: Promise<void> = Promise.resolve();
     private readonly subscriptions: vscode.Disposable[] = [];
     constructor(private readonly context: vscode.ExtensionContext, private readonly git: GitService, private readonly operation = { busy: false }) {
@@ -40,13 +41,13 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
     private enqueue(action: () => Promise<void>): Promise<void> { return this.queue = this.queue.then(action).catch(e => { this.notify(describeGitError(e), 'error'); }); }
     private async hydrate(): Promise<void> {
         await this.git.whenReady();
-        const snapshot = await this.git.snapshot();
+        const snapshot = await this.git.snapshot(this.previewRef);
         this.ready = true;
         this.post({ type: 'hydrate', snapshot, notice: this.git.startupProblem });
     }
     private async pushSnapshot(_force: boolean): Promise<void> {
         if (!this.ready) return;
-        const snapshot = await this.git.snapshot();
+        const snapshot = await this.git.snapshot(this.previewRef);
         this.post({ type: 'snapshot', snapshot });
     }
     async refresh(): Promise<void> {
@@ -92,12 +93,22 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
             await this.refresh();
             return;
         }
+        if (message.type === 'preview-branch') {
+            this.previewRef = message.ref;
+            await this.enqueue(() => this.pushSnapshot(true));
+            return;
+        }
+        if (message.type === 'preview-current') {
+            this.previewRef = undefined;
+            await this.enqueue(() => this.pushSnapshot(true));
+            return;
+        }
         switch (message.type) {
             case 'select-repo':
                 if (this.operation.busy)
                     throw new UserFacingError('Git 操作进行中，请稍候再切换仓库。');
+                this.previewRef = undefined;
                 await this.git.select(message.repoId);
-                await this.enqueue(() => this.pushSnapshot(true));
                 break;
             case 'open-file':
                 await this.git.open(message.path);

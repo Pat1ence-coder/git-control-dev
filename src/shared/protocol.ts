@@ -22,6 +22,20 @@ export interface ConflictFile {
     truncated?: boolean;
     nativeOnly?: boolean;
 }
+export interface BranchInfo {
+    name: string;
+    ref: string;
+    local: boolean;
+    current: boolean;
+    commit?: string;
+    ahead?: number;
+    behind?: number;
+}
+export interface BranchPreview {
+    ref: string;
+    name: string;
+    graph: GraphModel;
+}
 export interface Snapshot {
     repoId: string;
     repoName: string;
@@ -42,6 +56,8 @@ export interface Snapshot {
     canMerge: boolean;
     canAbort: boolean;
     graph: GraphModel;
+    branchList?: BranchInfo[];
+    preview?: BranchPreview;
 }
 export interface CommitDetail {
     hash: string;
@@ -72,10 +88,13 @@ export interface StagedReview {
     blocked?: string;
 }
 export type ToHost = {
-    type: 'ready' | 'refresh' | 'abort-merge' | 'suggest-commit' | 'open-scm' | 'open-workbench' | 'native-stage-conflicts';
+    type: 'ready' | 'refresh' | 'abort-merge' | 'suggest-commit' | 'open-scm' | 'open-workbench' | 'native-stage-conflicts' | 'preview-current';
 } | {
     type: 'select-repo';
     repoId: string;
+} | {
+    type: 'preview-branch';
+    ref: string;
 } | {
     type: 'merge';
     ref: string;
@@ -151,9 +170,14 @@ export function asHostMessage(value: unknown): ToHost | undefined {
         case 'suggest-commit':
         case 'open-scm':
         case 'native-stage-conflicts':
-        case 'open-workbench': return { type: m.type };
+        case 'open-workbench':
+        case 'preview-current': return { type: m.type };
         case 'select-repo':
             if (str('repoId'))
+                return m as unknown as ToHost;
+            break;
+        case 'preview-branch':
+            if (str('ref', 300))
                 return m as unknown as ToHost;
             break;
         case 'merge':

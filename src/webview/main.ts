@@ -1,6 +1,6 @@
 import type { ToHost, ToWebview, Snapshot, Strategy, CommitDetail } from '../shared/protocol';
 import { esc } from '../shared/html';
-import { button, icon, renderGraph, renderLiveStage, livePhase, renderCommitDetail, renderReview, renderWorkingTree, type ReviewState, type LiveState } from './render';
+import { button, icon, renderGraph, renderLiveStage, renderBranchPopover, livePhase, renderCommitDetail, renderReview, renderWorkingTree, type ReviewState, type LiveState } from './render';
 import { version } from '../../package.json';
 import { renderTaskControls, taskTitle, taskStatus, taskExplanation, type TaskView } from './task';
 
@@ -20,7 +20,7 @@ const app: {
     detailOpen: false, detailLoading: false, reviewOpen: false, review: freshReview(), requestId: 0, conflictsOpen: false, peekOpen: false, branchPickerOpen: false
 };
 const root = document.getElementById('app')!;
-root.innerHTML = `<header id="toolbar"></header><main class="task-workspace"><div id="task-context"></div><article id="task-card" class="task-card" aria-label="Git 任务"><header id="task-heading"></header><div id="graph"></div><div id="task-controls" class="task-controls"></div><section id="working-changes" aria-label="未暂存更改"></section><div id="task-notice"></div><section id="stage" aria-label="任务详情"></section></article><p id="task-explanation"></p><div id="task-meta"></div></main><footer id="status-bar"></footer><div id="announcer" class="sr-only" aria-live="polite"></div>`;
+root.innerHTML = `<header id="toolbar"></header><main class="task-workspace"><div id="task-context"></div><article id="task-card" class="task-card" aria-label="Git 任务"><header id="task-heading"></header><div id="branch-popover"></div><div id="graph"></div><div id="task-controls" class="task-controls"></div><section id="working-changes" aria-label="未暂存更改"></section><div id="task-notice"></div><section id="stage" aria-label="任务详情"></section></article><p id="task-explanation"></p><div id="task-meta"></div></main><footer id="status-bar"></footer><div id="announcer" class="sr-only" aria-live="polite"></div>`;
 const htmlCache = new Map<string, string>();
 let lastPhase = '';
 const post = (message: ToHost) => { api?.postMessage(message); };
@@ -59,21 +59,27 @@ function render(): void {
     const task: TaskView = { ...app, phase: current, busy: busy() };
     const status = taskStatus(current);
     update('toolbar', `<div class="brand">${icon('branch')}<strong>Generative Git</strong></div><div class="toolbar-controls">${button('refresh', icon('refresh'), 'icon-button', 'aria-label="刷新" title="刷新"')}${api ? button('open-workbench', icon('expand'), 'icon-button', 'aria-label="在编辑器中展开" title="在编辑器中展开"') : ''}</div>`);
-    update('task-context', `<div class="breadcrumb">${icon('branch')}<span>${esc(repoName)}</span><span class="context-divider">/</span><code>${esc(head)}</code>${(app.snapshot?.repositories.length || 0) > 1 ? `<select data-action="select-repo" aria-label="切换仓库" ${disabled}>${app.snapshot!.repositories.map(r => `<option value="${esc(r.id)}" ${r.id === app.snapshot!.repoId ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select>` : ''}</div><span class="activity-caption">${status.tone === 'running' ? '<i class="spinner"></i>' : ''}本地任务</span>`);
-    update('task-heading', `<h1>${esc(taskTitle(task))}</h1><span class="task-state ${status.tone}"><i></i>${status.label}</span>`);
-    let graph = app.snapshot?.graph;
-    if (graph && app.live.kind === 'committed') {
+    const branchTrigger = app.snapshot
+        ? `<button class="branch-trigger${app.branchPickerOpen ? ' active' : ''}" type="button" data-action="choose-branch" aria-haspopup="dialog" aria-expanded="${app.branchPickerOpen}" title="浏览分支">${esc(head)}${icon('chevron')}</button>`
+        : `<code>${esc(head)}</code>`;
+    update('task-context', `<div class="breadcrumb">${icon('branch')}<span>${esc(repoName)}</span><span class="context-divider">/</span>${branchTrigger}${(app.snapshot?.repositories.length || 0) > 1 ? `<select data-action="select-repo" aria-label="切换仓库" ${disabled}>${app.snapshot!.repositories.map(r => `<option value="${esc(r.id)}" ${r.id === app.snapshot!.repoId ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select>` : ''}</div>`);
+    update('task-heading', `<h1>${esc(taskTitle(task))}</h1>`);
+    update('branch-popover', app.branchPickerOpen && app.snapshot ? renderBranchPopover(app.snapshot) : '');
+    const preview = app.snapshot?.preview;
+    let graph = preview?.graph ?? app.snapshot?.graph;
+    if (graph && !preview && app.live.kind === 'committed') {
         const hash = app.live.hash;
         graph = { ...graph, edges: graph.edges.map(edge => edge.from === hash ? { ...edge, style: 'join' } : edge) };
     }
-    if (graph && app.snapshot && !app.snapshot.mergeHead && (app.snapshot.workingTreeCount || app.snapshot.stagedCount)) {
+    if (graph && !preview && app.snapshot && !app.snapshot.mergeHead && (app.snapshot.workingTreeCount || app.snapshot.stagedCount)) {
         const tip = graph.nodes.find(n => n.tip);
         graph = { ...graph, nodes: [{ id: 'working-tree', hash: `${app.snapshot.workingTreeCount + app.snapshot.stagedCount} 项`, title: '未提交的改动', lane: tip?.lane || 0, row: 0, badges: ['工作区'], role: 'ghost' }, ...graph.nodes.map(n => ({ ...n, row: n.row + 1 }))], edges: tip ? [{ id: 'working-tree-edge', from: 'working-tree', to: tip.id, style: 'pending' }, ...graph.edges] : graph.edges };
     }
-    update('graph', graph ? renderGraph(graph, reduced, app.detailOpen ? app.detailHash : undefined) : '<div class="graph-empty">打开本地仓库后，这里会显示提交历史。</div>');
+    const graphBanner = preview ? `<div class="branch-preview" role="status"><span>${icon('branch')}只读预览 <strong>${esc(preview.name)}</strong><span>不会切换 HEAD</span></span>${button('preview-current', '返回当前分支', 'text-button')}</div>` : '';
+    update('graph', graphBanner + (graph ? renderGraph(graph, reduced, app.detailOpen ? app.detailHash : undefined) : '<div class="graph-empty">打开本地仓库后，这里会显示提交历史。</div>'));
     update('task-controls', renderTaskControls(task));
     update('working-changes', app.snapshot ? renderWorkingTree(app.snapshot, busy()) : '');
-    const expanded = app.detailOpen || app.reviewOpen || app.conflictsOpen || app.branchPickerOpen || ['confirm', 'abort-confirm', 'error'].includes(app.live.kind);
+    const expanded = app.detailOpen || app.reviewOpen || app.conflictsOpen || ['confirm', 'abort-confirm', 'error'].includes(app.live.kind);
     root.dataset.expanded = expanded ? 'true' : 'false';
     const body = !expanded ? ''
         : app.detailOpen ? renderCommitDetail(app.detail, app.detailLoading, app.detailError)
@@ -81,10 +87,11 @@ function render(): void {
         : renderLiveStage(app.snapshot, app.live, app.selectedPath);
     update('stage', body);
     update('task-notice', app.notice ? `<div class="notice ${app.notice.level}" role="status">${esc(app.notice.text)}</div>` : '');
-    update('task-explanation', taskExplanation(task));
+    const quietOverview = current === 'idle' && app.live.kind === 'overview' && !app.detailOpen && !app.reviewOpen && !app.conflictsOpen;
+    update('task-explanation', quietOverview ? '' : taskExplanation(task));
     const patch = app.review.data?.patch;
     const stats = patch === undefined ? '' : `<span class="meta-pill" title="当前审查文件的增删行数"><span class="addition-text">+${patch.split('\n').filter(l => l.startsWith('+') && !l.startsWith('+++')).length}</span><span class="deletion-text">−${patch.split('\n').filter(l => l.startsWith('-') && !l.startsWith('---')).length}</span><span>当前文件</span></span>`;
-    update('task-meta', `<span class="meta-pill">${icon('branch')}${esc(repoName)}</span><span class="meta-pill"><i class="connection-dot"></i>本地 Git</span>${stats}`);
+    update('task-meta', stats);
     update('status-bar', `<span>Generative Git ${esc(version)}</span><span>本地操作，不自动推送</span>`);
     if (current !== lastPhase) {
         const stage = document.getElementById('stage')!;
@@ -144,7 +151,17 @@ function action(name: string, element: HTMLElement): void {
         case 'peek-conflicts': app.peekOpen = !app.peekOpen; render(); break;
         case 'close-peek': closePeek(); break;
         case 'show-conflicts': closeDetail(); app.reviewOpen = false; app.peekOpen = false; app.conflictsOpen = true; app.branchPickerOpen = false; render(); break;
-        case 'choose-branch': app.branchPickerOpen = true; render(); break;
+        case 'choose-branch': app.branchPickerOpen = !app.branchPickerOpen; render(); break;
+        case 'close-branch': app.branchPickerOpen = false; render(); break;
+        case 'preview-branch': {
+            const ref = element.dataset.ref;
+            if (!ref) return;
+            post({ type: 'preview-branch', ref });
+            break;
+        }
+        case 'preview-current':
+            post({ type: 'preview-current' });
+            break;
         case 'collapse-task': closeDetail(); app.reviewOpen = false; app.review.loading = false; app.conflictsOpen = false; app.peekOpen = false; app.branchPickerOpen = false; render(); break;
         case 'review-staged': beginReview(); break;
         case 'review-file': beginReview(element.dataset.path); break;
@@ -185,6 +202,10 @@ root.addEventListener('click', event => {
     const target = event.target as Element;
     const el = target.closest<HTMLElement>('[data-action]');
     if (app.peekOpen && !target.closest('.conflict-peek')) { app.peekOpen = false; if (!el) render(); }
+    if (app.branchPickerOpen && !target.closest('.branch-popover') && !target.closest('[data-action="choose-branch"]')) {
+        app.branchPickerOpen = false;
+        render();
+    }
     if (el && !(el instanceof HTMLSelectElement) && !el.hasAttribute('disabled')) action(el.dataset.action!, el);
 });
 root.addEventListener('input', event => {

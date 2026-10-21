@@ -1,6 +1,6 @@
 import { esc, clipChars } from '../shared/html';
 import type { GraphModel } from '../shared/model';
-import type { ConflictFile, CommitDetail, Snapshot, Strategy, StagedReview } from '../shared/protocol';
+import type { ConflictFile, CommitDetail, Snapshot, Strategy, StagedReview, BranchInfo } from '../shared/protocol';
 export type LiveState = {
     kind: 'overview';
 } | {
@@ -111,8 +111,7 @@ export function renderWorkingTree(snapshot: Snapshot, disabled: boolean): string
     const files = snapshot.workingTreeFiles;
     if (!files) return snapshot.workingTreeCount
         ? `<div class="notice">未暂存更改列表尚未加载。${button('refresh', '刷新', 'text-button')}</div>` : '';
-    const untracked = files.filter(file => file.untracked).length;
-    return `<div class="working-changes"><header><h3>未暂存更改<span class="working-count">${files.length}</span></h3>${untracked ? `<span class="micro working-hint">${untracked} 个新文件</span>` : ''}</header>${files.length
+    return `<div class="working-changes"><header><h3>未暂存更改<span class="working-count">${files.length}</span></h3></header>${files.length
         ? `<ul class="working-list">${files.map(file => {
             const [directory, name] = splitWorkingPath(file.path);
             const [mark, tone] = workingMark(file.status);
@@ -147,11 +146,32 @@ export function renderLiveStage(snapshot: Snapshot | null, state: LiveState, sel
     if (state.kind === 'confirm') return title('合并分支', '确认合并到当前分支', `<code>${esc(state.ref)}</code> → <code>${esc(s.headName)}</code>。无冲突时 Git 可能直接快进或创建合并提交。`)
         + (s.workingTreeCount || s.stagedCount ? '<p class="notice">仓库中有未提交改动，请确认后继续。</p>' : '') + `<div class="actions">${button('merge-go', '确认合并', 'primary')}${button('live-back', '返回', 'secondary')}</div>`;
     if (s.mergeHead) return title('准备提交', '冲突已解决', '审查暂存区中的完整变更，编辑提交说明并确认提交。') + `<div class="staged-summary">${icon('check')}<strong>${s.stagedCount} 个已暂存文件</strong><span>${esc(s.headName)}</span></div><div class="actions">${button('review-staged', `审查并提交 ${icon('arrow')}`, 'primary')}${button('open-scm', '在 Source Control 查看', 'secondary')}${button('abort-ask', '中止合并', 'text-button danger-text', s.canAbort ? '' : 'disabled')}</div>`;
-    const branches = s.branches.filter(b => b !== s.headName);
     return rebaseNote + title('工作区', '选择下一步操作', `<code>${esc(s.headName)}</code> · ${s.workingTreeCount} 项未暂存 · ${s.stagedCount} 项已暂存`)
         + (s.stagedCount ? `<div class="staged-summary">${icon('commit')}<strong>${s.stagedCount} 个文件等待提交</strong>${button('review-staged', '审查并提交', 'primary')}</div>` : '')
-        + `<h3>本地分支</h3>${!s.canMerge ? '<p class="notice">当前 Git API 不支持发起合并，请在终端执行 git merge &lt;分支&gt;。</p>' : ''}<div class="branch-list">${branches.map(ref => `<div class="branch-row"><span>${icon('branch')}<code>${esc(ref)}</code></span>${button('merge-ask', `合并 ${icon('arrow')}`, 'secondary small', `data-ref="${esc(ref)}" ${!s.canMerge || s.rebasing ? 'disabled' : ''}`)}</div>`).join('') || '<p class="micro">当前没有其他本地分支。</p>'}</div><div class="actions">${button('review-staged', '查看暂存区', 'secondary')}${button('open-scm', '打开 Source Control', 'text-button')}</div>`;
+        + `<div class="actions">${button('review-staged', '查看暂存区', 'secondary')}${button('open-scm', '打开 Source Control', 'text-button')}</div>`;
 }
+export function renderBranchPopover(s: Snapshot): string {
+    const fallbackBranches: BranchInfo[] = s.branches.map(name => ({ name, ref: `refs/heads/${name}`, local: true, current: name === s.headName }));
+    const branchList: BranchInfo[] = s.branchList?.length
+        ? s.branchList
+        : [{ name: s.headName, ref: `refs/heads/${s.headName}`, local: true, current: true }, ...fallbackBranches.filter(branch => !branch.current)];
+    const preview = s.preview;
+    const branchRow = (branch: BranchInfo): string => {
+        const indicators = `${branch.current ? '<span class="branch-current">当前</span>' : ''}${branch.ahead ? `<span class="branch-ab" title="领先上游 ${branch.ahead}">↑${branch.ahead}</span>` : ''}${branch.behind ? `<span class="branch-ab" title="落后上游 ${branch.behind}">↓${branch.behind}</span>` : ''}`;
+        const previewing = preview?.ref === branch.ref;
+        const previewButton = branch.current
+            ? button('preview-current', preview ? '返回当前' : '查看', 'text-button')
+            : button('preview-branch', previewing ? '预览中' : '预览', 'text-button', `data-ref="${esc(branch.ref)}"${previewing ? ' aria-current="true"' : ''}`);
+        const mergeButton = !branch.current && branch.local && s.canMerge && !s.rebasing
+            ? button('merge-ask', '合并', 'secondary small', `data-ref="${esc(branch.name)}"`)
+            : '';
+        return `<div class="branch-row${branch.current ? ' current' : ''}${previewing ? ' previewing' : ''}"><span class="branch-name">${icon('branch')}<code>${esc(branch.name)}</code>${indicators}</span><span class="branch-actions">${previewButton}${mergeButton}</span></div>`;
+    };
+    const localBranches = branchList.filter(branch => branch.local);
+    const remoteBranches = branchList.filter(branch => !branch.local);
+    return `<div class="branch-popover" role="dialog" aria-label="分支浏览"><div class="branch-popover-head"><div><h3>分支</h3><p class="micro">只读预览，不会切换 HEAD</p></div><button class="icon-button" type="button" data-action="close-branch" aria-label="关闭" title="关闭">${icon('close')}</button></div>${!s.canMerge ? '<p class="notice">当前 Git API 不支持发起合并；仍可预览分支。</p>' : ''}<div class="branch-popover-body">${localBranches.length ? `<span class="branch-group">本地</span><div class="branch-list">${localBranches.map(branchRow).join('')}</div>` : ''}${remoteBranches.length ? `<span class="branch-group">远端</span><div class="branch-list">${remoteBranches.map(branchRow).join('')}</div>` : ''}${!branchList.length ? '<p class="micro">还没有分支。</p>' : ''}</div><p class="micro branch-popover-foot">本地分支的合并沿用原有确认流程。</p></div>`;
+}
+
 export function renderPatch(patch: string): string {
     let oldLine = 0, newLine = 0, inHunk = false;
     if (!patch) return '<div class="diff-empty">没有可显示的文本差异</div>';
