@@ -38,6 +38,22 @@ export interface BranchPreview {
     name: string;
     graph: GraphModel;
 }
+export interface PullRequestCheck {
+    name: string;
+    status: string;
+    conclusion?: string;
+}
+export interface PullRequestInfo {
+    number: number;
+    title: string;
+    state: 'open' | 'closed' | 'merged';
+    url: string;
+    headSha: string;
+    headRef: string;
+    baseRef: string;
+    checks: PullRequestCheck[];
+    checksUnavailable?: boolean;
+}
 export interface Snapshot {
     repoId: string;
     repoName: string;
@@ -159,6 +175,9 @@ export type ToWebview = {
     ok: boolean;
     hash?: string;
     error?: string;
+} | {
+    type: 'pull-request';
+    pullRequest: PullRequestInfo | null;
 };
 export function asHostMessage(value: unknown): ToHost | undefined {
     if (!value || typeof value !== 'object')

@@ -8,6 +8,7 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
     private panel?: vscode.WebviewPanel;
     private ready = false;
     private previewRef?: string;
+    private prRequest = 0;
     private queue: Promise<void> = Promise.resolve();
     private readonly subscriptions: vscode.Disposable[] = [];
     constructor(private readonly context: vscode.ExtensionContext, private readonly git: GitService, private readonly operation = { busy: false }) {
@@ -44,11 +45,28 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
         const snapshot = await this.git.snapshot(this.previewRef);
         this.ready = true;
         this.post({ type: 'hydrate', snapshot, notice: this.git.startupProblem });
+        void this.enrichPullRequest();
     }
     private async pushSnapshot(_force: boolean): Promise<void> {
         if (!this.ready) return;
         const snapshot = await this.git.snapshot(this.previewRef);
         this.post({ type: 'snapshot', snapshot });
+        void this.enrichPullRequest();
+    }
+    private async enrichPullRequest(): Promise<void> {
+        const request = ++this.prRequest;
+        if (!this.ready) return;
+        if (this.previewRef) {
+            this.post({ type: 'pull-request', pullRequest: null });
+            return;
+        }
+        const pullRequest = this.git.pullRequest;
+        if (typeof pullRequest !== 'function') return;
+        let value = null;
+        try { value = await pullRequest.call(this.git) ?? null; }
+        catch { value = null; }
+        if (request !== this.prRequest || !this.ready) return;
+        this.post({ type: 'pull-request', pullRequest: value });
     }
     async refresh(): Promise<void> {
         await this.git.refresh();

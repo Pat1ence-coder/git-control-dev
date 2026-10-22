@@ -265,3 +265,28 @@ test('quick composer hands its message to the real review flow', () => {
     ui.message({ type: 'staged-review', requestId: ui.posted.at(-1).requestId, review: makeReview() });
     assert.match(ui.get('stage').innerHTML, /fix: quick composer/);
 });
+test('webview: real PR state and checks render without local data', () => {
+    const ui = harness();
+    ui.message({ type: 'hydrate', snapshot: makeSnapshot() });
+    ui.message({
+        type: 'pull-request',
+        pullRequest: {
+            number: 128,
+            title: 'Refresh sessions in the auth middleware',
+            state: 'open',
+            url: 'https://github.com/acme/webapp/pull/128',
+            headSha: 'abc123',
+            headRef: 'feat/session-refresh',
+            baseRef: 'main',
+            checks: [
+                { name: 'Tests', status: 'completed', conclusion: 'success' },
+                { name: 'Preview', status: 'in_progress' }
+            ]
+        }
+    });
+    assert.match(ui.get('task-heading').innerHTML, /Refresh sessions in the auth middleware #128/);
+    assert.match(ui.get('task-heading').innerHTML, /Open/);
+    assert.match(ui.get('pr-checks').innerHTML, /Tests/);
+    assert.match(ui.get('pr-checks').innerHTML, /Preview/);
+    assert.match(ui.get('pr-checks').innerHTML, /pr-check success/);
+});

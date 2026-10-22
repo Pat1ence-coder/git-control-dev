@@ -3,7 +3,7 @@ import path from 'node:path';
 import { realpath } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import type { GitAPI, GitExtension, Repository, Commit, Ref, Change } from './types';
-import type { Snapshot, ConflictFile, Strategy, CommitDetail, StagedReview, BranchInfo, BranchPreview } from '../shared/protocol';
+import type { Snapshot, ConflictFile, Strategy, CommitDetail, StagedReview, BranchInfo, BranchPreview, PullRequestInfo } from '../shared/protocol';
 import { applyResolution, hasConflictMarkers, parseConflict } from './conflicts';
 import { layoutCommits, withPendingMerge } from './layout';
 import { resolveInside, samePath } from './paths';
@@ -12,6 +12,7 @@ import { statusLabel } from './status';
 import { ResolutionSafety } from './safety';
 import { nativeCommit, requireNativeCommand } from './nativeGit';
 import { GitMetadata } from './metadata';
+import { readPullRequest } from './github';
 import { describeGitError, UserFacingError } from './errors';
 export { describeGitError } from './errors';
 export const MAX_FILE_BYTES = 180000;
@@ -26,6 +27,7 @@ export class GitService implements vscode.Disposable {
     private ready: Promise<void> = Promise.resolve();
     private readonly reviewTokens = new Map<string, string>();
     private readonly metadata = new GitMetadata();
+    private pullRequestCache?: { key: string; at: number; value: PullRequestInfo | undefined };
     startupProblem?: string;
     constructor(private readonly state: vscode.Memento, private readonly output: vscode.OutputChannel,
         private readonly safety: ResolutionSafety) { this.selected = state.get<string>('repo'); }
@@ -260,6 +262,33 @@ export class GitService implements vscode.Disposable {
             return commits[0]?.authorName?.trim() || undefined;
         }
         catch { return undefined; }
+    }
+    async pullRequest(): Promise<PullRequestInfo | undefined> {
+        const repo = this.repository;
+        const branch = repo?.state.HEAD?.name;
+        if (!repo || !branch) return undefined;
+        let remote: string;
+        try { remote = (await repo.getConfig('remote.origin.url')).trim(); }
+        catch { return undefined; }
+        if (!remote) return undefined;
+        const key = `${remote}\0${branch}`;
+        const now = Date.now();
+        if (this.pullRequestCache && this.pullRequestCache.key === key && now - this.pullRequestCache.at < 30_000)
+            return this.pullRequestCache.value;
+        const result = await readPullRequest(remote, branch);
+        const value: PullRequestInfo | undefined = result.kind === 'ok' ? {
+            number: result.pullRequest.number,
+            title: result.pullRequest.title,
+            state: result.pullRequest.state,
+            url: result.pullRequest.url,
+            headSha: result.pullRequest.headSha,
+            headRef: result.pullRequest.headRef,
+            baseRef: result.pullRequest.baseRef,
+            checks: result.pullRequest.checks,
+            checksUnavailable: result.pullRequest.checksUnavailable
+        } : undefined;
+        this.pullRequestCache = { key, at: now, value };
+        return value;
     }
     async snapshot(previewRef?: string): Promise<Snapshot | null> {
         const repo = this.repository;

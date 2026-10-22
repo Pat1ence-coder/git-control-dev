@@ -1,7 +1,7 @@
-import type { Snapshot } from '../shared/protocol';
+import type { Snapshot, PullRequestInfo } from '../shared/protocol';
 import type { LiveState } from './render';
 
-export type PresentationTone = 'neutral' | 'ready' | 'warning' | 'success' | 'running';
+export type PresentationTone = 'neutral' | 'ready' | 'warning' | 'success' | 'running' | 'open' | 'merged' | 'closed';
 export type ChipTone = 'pending' | 'staged' | 'conflict' | 'neutral';
 
 export interface TaskChip {
@@ -22,6 +22,7 @@ export interface PresentationInput {
     phase: string;
     snapshot: Snapshot | null;
     live: LiveState;
+    pullRequest?: PullRequestInfo;
 }
 
 function runningStatus(phase: string): TaskPresentation['status'] | undefined {
@@ -33,15 +34,19 @@ function runningStatus(phase: string): TaskPresentation['status'] | undefined {
 }
 
 function statusFor(input: PresentationInput): TaskPresentation['status'] {
-    const { phase, snapshot: s, live } = input;
+    const { phase, snapshot: s, live, pullRequest } = input;
     if (!s) return { label: phase === 'loading' ? '连接中' : '未打开仓库', tone: phase === 'loading' ? 'running' : 'neutral' };
     if (live.kind === 'error') return { label: '需要处理', tone: 'warning' };
     if (live.kind === 'abort-confirm') return { label: '等待确认', tone: 'warning' };
     if (phase === 'error') return { label: '需要处理', tone: 'warning' };
     if (phase === 'committed') return { label: '已提交', tone: 'success' };
-    if (phase === 'conflict' || s.conflicts.length) return { label: '存在冲突', tone: 'warning' };
     const running = runningStatus(phase);
     if (running) return running;
+    if (pullRequest) {
+        const state = pullRequest.state;
+        return { label: state === 'open' ? 'Open' : state === 'merged' ? 'Merged' : 'Closed', tone: state };
+    }
+    if (phase === 'conflict' || s.conflicts.length) return { label: '存在冲突', tone: 'warning' };
     if (s.preview) return { label: '只读预览', tone: 'ready' };
     if (phase === 'confirm') return { label: '等待确认', tone: 'ready' };
     if (s.stagedCount || s.mergeHead || phase === 'reviewing' || phase === 'ready') return { label: '等待审查', tone: 'ready' };
@@ -54,7 +59,7 @@ function latestCommitTitle(s: Snapshot): string | undefined {
 }
 
 function titleFor(input: PresentationInput): string {
-    const { phase, snapshot: s, live } = input;
+    const { phase, snapshot: s, live, pullRequest } = input;
     if (!s) return phase === 'loading' ? '正在连接 Git' : '打开一个 Git 仓库';
     if (live.kind === 'error' || phase === 'error') return '操作未完成';
     if (phase === 'committed') return '提交完成';
@@ -62,6 +67,7 @@ function titleFor(input: PresentationInput): string {
     if (live.kind === 'merging') return 'Git 正在合并';
     if (live.kind === 'resolving') return '处理冲突';
     if (live.kind === 'confirm') return `将 ${live.ref} 合入 ${s.headName}`;
+    if (pullRequest) return `${pullRequest.title} #${pullRequest.number}`;
     if (s.preview) return `预览 ${s.preview.name}`;
     if (s.conflicts.length) return `解决 ${s.conflicts.length} 个文件的冲突`;
     if (s.mergeHead) return '冲突已解决，准备提交';
@@ -102,9 +108,10 @@ function narrativeFor(input: PresentationInput): string {
     return `${s.headName} 工作区干净；可以查看提交历史或打开分支预览。不会自动拉取或推送。`;
 }
 
-function chipsFor(s: Snapshot | null): TaskChip[] {
+function chipsFor(s: Snapshot | null, pullRequest?: PullRequestInfo): TaskChip[] {
     if (!s) return [];
     const chips: TaskChip[] = [];
+    if (pullRequest) chips.push({ label: `#${pullRequest.number}`, tone: 'neutral' });
     if (s.conflicts.length) chips.push({ label: `${s.conflicts.length} 冲突`, tone: 'conflict' });
     if (s.workingTreeCount) chips.push({ label: `${s.workingTreeCount} 未暂存`, tone: 'pending' });
     if (s.stagedCount) chips.push({ label: `${s.stagedCount} 已暂存`, tone: 'staged' });
@@ -135,7 +142,7 @@ export function presentTask(input: PresentationInput): TaskPresentation {
     return {
         title: titleFor(input),
         status: statusFor(input),
-        chips: chipsFor(input.snapshot),
+        chips: chipsFor(input.snapshot, input.pullRequest),
         narrative: narrativeFor(input),
         footText: footFor(input)
     };

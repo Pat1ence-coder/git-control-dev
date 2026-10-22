@@ -4,6 +4,7 @@ import './provider';
 import './native-git';
 import './security';
 import './presentation';
+import './github';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';

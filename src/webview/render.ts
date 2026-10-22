@@ -1,6 +1,6 @@
 import { esc, clipChars } from '../shared/html';
 import type { GraphModel } from '../shared/model';
-import type { ConflictFile, CommitDetail, Snapshot, Strategy, StagedReview, BranchInfo } from '../shared/protocol';
+import type { ConflictFile, CommitDetail, Snapshot, Strategy, StagedReview, BranchInfo, PullRequestInfo } from '../shared/protocol';
 export type LiveState = {
     kind: 'overview';
 } | {
@@ -75,6 +75,19 @@ export function icon(name: 'branch' | 'file' | 'arrow' | 'check' | 'expand' | 'r
         commit: '<circle cx="10" cy="10" r="4"/><path d="M2 10h4m8 0h4"/>'
     };
     return `<svg class="icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>`;
+}
+export function renderPullRequestChecks(pr?: PullRequestInfo): string {
+    if (!pr) return '';
+    if (pr.checksUnavailable) return `<div class="pr-checks"><span class="pr-checks-label">checks</span><span class="pr-check unavailable">未连接</span></div>`;
+    if (!pr.checks.length) return '';
+    const checks = pr.checks.map(check => {
+        const result = check.status === 'completed' ? (check.conclusion || 'completed') : check.status;
+        const tone = check.status !== 'completed' ? 'running'
+            : check.conclusion === 'success' ? 'success'
+                : check.conclusion === 'neutral' || check.conclusion === 'skipped' ? 'neutral' : 'failure';
+        return `<span class="pr-check ${tone}" title="${esc(`${check.status}${check.conclusion ? ` · ${check.conclusion}` : ''}`)}"><i></i>${esc(check.name)}<span>${esc(result)}</span></span>`;
+    }).join('');
+    return `<div class="pr-checks"><span class="pr-checks-label">checks</span>${checks}</div>`;
 }
 export function renderLoadingGraph(): string {
     const row = (width: string) => `<div class="skeleton-row"><i></i><span class="skeleton-line ${width}"></span><em></em></div>`;

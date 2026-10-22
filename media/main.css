@@ -595,3 +595,21 @@ button.conflict-primary { background: var(--accent-soft); color: var(--accent); 
 button.conflict-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 12%, var(--card)); }
 
 .conflict-popover { border-color: var(--border); }
+
+/* Read-only GitHub PR/check state. Nothing is shown until real data arrives. */
+.task-state.open { color: var(--success); }
+.task-state.merged { color: #7c3aed; }
+.task-state.closed { color: var(--muted); }
+#pr-checks:empty { display: none; }
+#pr-checks { padding: 8px 17px; border-top: 1px solid var(--border); }
+.pr-checks { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 10.5px; }
+.pr-checks-label { color: var(--muted); font-size: 9.5px; letter-spacing: .05em; text-transform: uppercase; margin-right: 2px; }
+.pr-check { display: inline-flex; align-items: center; gap: 5px; min-height: 22px; padding: 0 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); }
+.pr-check i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.pr-check.success { color: var(--success); border-color: color-mix(in srgb, var(--success) 25%, var(--border)); }
+.pr-check.failure { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 25%, var(--border)); }
+.pr-check.running { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 25%, var(--border)); }
+.pr-check.running i { animation: fade 1.3s ease-in-out infinite; }
+.pr-check.neutral { color: var(--muted); }
+.pr-check.unavailable { background: var(--soft); }
+.pr-check span { color: var(--muted); font-size: 9.5px; }

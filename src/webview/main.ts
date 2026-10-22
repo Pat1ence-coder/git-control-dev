@@ -1,6 +1,6 @@
-import type { ToHost, ToWebview, Snapshot, Strategy, CommitDetail } from '../shared/protocol';
+import type { ToHost, ToWebview, Snapshot, Strategy, CommitDetail, PullRequestInfo } from '../shared/protocol';
 import { esc } from '../shared/html';
-import { button, icon, renderGraph, renderLoadingGraph, renderLiveStage, renderBranchPopover, livePhase, renderCommitDetail, renderReview, renderWorkingTree, type ReviewState, type LiveState } from './render';
+import { button, icon, renderGraph, renderLoadingGraph, renderPullRequestChecks, renderLiveStage, renderBranchPopover, livePhase, renderCommitDetail, renderReview, renderWorkingTree, type ReviewState, type LiveState } from './render';
 import { version } from '../../package.json';
 import { renderTaskControls, type TaskView } from './task';
 import { presentTask } from './presentation';
@@ -12,7 +12,7 @@ const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 const freshReview = (): ReviewState => ({ loading: false, draft: '', dirty: false, committing: false });
 const drafts = new Map<string, string>();
 const app: {
-    booted: boolean; snapshot: Snapshot | null; live: LiveState;
+    booted: boolean; snapshot: Snapshot | null; live: LiveState; pullRequest?: PullRequestInfo;
     selectedPath?: string; notice?: { text: string; level: string };
     detailOpen: boolean; detail?: CommitDetail; detailHash?: string; detailLoading: boolean; detailError?: string;
     reviewOpen: boolean; review: ReviewState; requestId: number; conflictsOpen: boolean; peekOpen: boolean; branchPickerOpen: boolean;
@@ -21,7 +21,7 @@ const app: {
     detailOpen: false, detailLoading: false, reviewOpen: false, review: freshReview(), requestId: 0, conflictsOpen: false, peekOpen: false, branchPickerOpen: false
 };
 const root = document.getElementById('app')!;
-root.innerHTML = `<header id="toolbar"></header><main class="task-workspace"><div id="task-context"></div><article id="task-card" class="task-card" aria-label="Git 任务"><header id="task-heading"></header><div id="branch-popover"></div><div id="graph"></div><div id="task-notice"></div><section id="stage" aria-label="任务详情"></section><div id="task-controls" class="task-controls"></div></article><p id="task-explanation"></p><div id="task-meta"></div><section id="working-changes" aria-label="未暂存更改"></section><section id="quick-composer" class="quick-composer" aria-label="快速提交"><label class="sr-only" for="quick-message">提交说明</label><textarea id="quick-message" rows="1" maxlength="20000" placeholder="写提交说明，或直接审查暂存区…"></textarea><div class="quick-tools"><div id="quick-context" class="quick-context"></div><span class="quick-hint">本地操作，不自动推送</span>${button('quick-review', '审查并提交', 'primary')}</div></section></main><footer id="status-bar"></footer><div id="announcer" class="sr-only" aria-live="polite"></div>`;
+root.innerHTML = `<header id="toolbar"></header><main class="task-workspace"><div id="task-context"></div><article id="task-card" class="task-card" aria-label="Git 任务"><header id="task-heading"></header><div id="branch-popover"></div><div id="graph"></div><div id="pr-checks"></div><div id="task-notice"></div><section id="stage" aria-label="任务详情"></section><div id="task-controls" class="task-controls"></div></article><p id="task-explanation"></p><div id="task-meta"></div><section id="working-changes" aria-label="未暂存更改"></section><section id="quick-composer" class="quick-composer" aria-label="快速提交"><label class="sr-only" for="quick-message">提交说明</label><textarea id="quick-message" rows="1" maxlength="20000" placeholder="写提交说明，或直接审查暂存区…"></textarea><div class="quick-tools"><div id="quick-context" class="quick-context"></div><span class="quick-hint">本地操作，不自动推送</span>${button('quick-review', '审查并提交', 'primary')}</div></section></main><footer id="status-bar"></footer><div id="announcer" class="sr-only" aria-live="polite"></div>`;
 const htmlCache = new Map<string, string>();
 let lastPhase = '';
 const post = (message: ToHost) => { api?.postMessage(message); };
@@ -58,7 +58,7 @@ function render(): void {
     const repoName = app.snapshot?.repoName || '未打开仓库';
     const head = app.snapshot?.headName || '—';
     const task: TaskView = { ...app, phase: current, busy: busy() };
-    const presentation = presentTask({ phase: current, snapshot: app.snapshot, live: app.live });
+    const presentation = presentTask({ phase: current, snapshot: app.snapshot, live: app.live, pullRequest: app.pullRequest });
     update('toolbar', `<div class="brand">${icon('branch')}<strong>Generative Git</strong></div><div class="toolbar-controls">${button('refresh', icon('refresh'), 'icon-button', 'aria-label="刷新" title="刷新"')}${api ? button('open-workbench', icon('expand'), 'icon-button', 'aria-label="在编辑器中展开" title="在编辑器中展开"') : ''}</div>`);
     const branchTrigger = app.snapshot
         ? `<button class="branch-trigger${app.branchPickerOpen ? ' active' : ''}" type="button" data-action="choose-branch" aria-haspopup="dialog" aria-expanded="${app.branchPickerOpen}" title="浏览分支">${esc(head)}${icon('chevron')}</button>`
@@ -81,6 +81,7 @@ function render(): void {
     }
     const graphBanner = preview ? `<div class="branch-preview" role="status"><span>${icon('branch')}只读预览 <strong>${esc(preview.name)}</strong><span>不会切换 HEAD</span></span>${button('preview-current', '返回当前分支', 'text-button')}</div>` : '';
     update('graph', graphBanner + (graph ? renderGraph(graph, reduced, app.detailOpen ? app.detailHash : undefined) : app.booted ? '<div class="graph-empty">打开本地仓库后，这里会显示提交历史。</div>' : renderLoadingGraph()));
+    update('pr-checks', renderPullRequestChecks(app.pullRequest));
     update('task-controls', renderTaskControls(task, presentation.footText));
     const hasWorking = !!app.snapshot && ((app.snapshot.workingTreeFiles?.length ?? 0) > 0 || app.snapshot.workingTreeCount > 0);
     update('working-changes', hasWorking ? renderWorkingTree(app.snapshot!, busy()) : '');
@@ -172,10 +173,12 @@ function action(name: string, element: HTMLElement): void {
         case 'preview-branch': {
             const ref = element.dataset.ref;
             if (!ref) return;
+            app.pullRequest = undefined;
             post({ type: 'preview-branch', ref });
             break;
         }
         case 'preview-current':
+            app.pullRequest = undefined;
             post({ type: 'preview-current' });
             break;
         case 'collapse-task': closeDetail(); app.reviewOpen = false; app.review.loading = false; app.conflictsOpen = false; app.peekOpen = false; app.branchPickerOpen = false; render(); break;
@@ -239,6 +242,7 @@ root.addEventListener('change', event => {
     if (select.dataset.action === 'select-repo' && !busy()) {
         const quick = document.getElementById('quick-message') as HTMLTextAreaElement | null;
         if (quick) quick.value = '';
+        app.pullRequest = undefined;
         closeDetail(); resetReview(); app.conflictsOpen = false; app.peekOpen = false; app.branchPickerOpen = false; app.selectedPath = undefined; app.notice = undefined; app.live = { kind: 'overview' };
         post({ type: 'select-repo', repoId: select.value }); render();
     }
@@ -270,14 +274,16 @@ window.addEventListener('keydown', event => {
 window.addEventListener('message', (event: MessageEvent<ToWebview>) => {
     const m = event.data;
     switch (m.type) {
-        case 'hydrate': app.booted = true; app.snapshot = m.snapshot; if (m.notice) app.notice = { text: m.notice, level: 'info' }; break;
+        case 'hydrate': app.booted = true; app.snapshot = m.snapshot; app.pullRequest = undefined; if (m.notice) app.notice = { text: m.notice, level: 'info' }; break;
         case 'snapshot': {
             const previous = app.snapshot; app.snapshot = m.snapshot;
+            if (previous?.repoId !== m.snapshot?.repoId || previous?.headName !== m.snapshot?.headName || previous?.headHash !== m.snapshot?.headHash || m.snapshot?.preview) app.pullRequest = undefined;
             if (previous?.repoId !== m.snapshot?.repoId) { closeDetail(); resetReview(); app.conflictsOpen = false; app.peekOpen = false; app.branchPickerOpen = false; app.selectedPath = undefined; }
             if (app.reviewOpen && !app.review.committing && previous && (previous.headHash !== m.snapshot?.headHash || previous.stagedCount !== m.snapshot?.stagedCount)) app.review.error = '仓库状态已变化，请重新加载审查。';
             break;
         }
         case 'notice': app.notice = m; break;
+        case 'pull-request': app.pullRequest = m.pullRequest ?? undefined; break;
         case 'live-result':
             app.live = m.kind === 'error' ? { kind: 'error', text: m.text || '操作未完成。' } : { kind: 'overview' };
             if (m.kind !== 'error' && m.text) app.notice = { level: 'info', text: m.text };

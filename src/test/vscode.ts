@@ -72,3 +72,7 @@ export class WorkspaceEdit {
     readonly changes: { uri: Uri; text: string }[] = [];
     replace(uri: Uri, _range: Range, text: string): void { this.changes.push({ uri, text }); }
 }
+
+export const authentication = {
+    getSession: async (..._args: unknown[]): Promise<any> => undefined
+};

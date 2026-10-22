@@ -115,3 +115,28 @@ test('presentation: empty, loading and error states stay honest', () => {
     assert.deepEqual(error.status, { label: '需要处理', tone: 'warning' });
     assert.match(error.narrative, /返回工作流/);
 });
+
+test('presentation: real PR state and checks take over the card surface', () => {
+    const pr = {
+        number: 128,
+        title: 'Refresh sessions in the auth middleware',
+        state: 'open' as const,
+        url: 'https://github.com/acme/webapp/pull/128',
+        headSha: 'abc123',
+        headRef: 'feat/session-refresh',
+        baseRef: 'main',
+        checks: [{ name: 'Tests', status: 'completed', conclusion: 'success' }]
+    };
+    const p = presentTask({
+        phase: 'conflict',
+        snapshot: snapshot({ conflicts: [conflict('src/auth.ts')] }),
+        live: overview,
+        pullRequest: pr
+    });
+    assert.equal(p.title, 'Refresh sessions in the auth middleware #128');
+    assert.deepEqual(p.status, { label: 'Open', tone: 'open' });
+    assert.deepEqual(p.chips, [
+        { label: '#128', tone: 'neutral' },
+        { label: '1 冲突', tone: 'conflict' }
+    ]);
+});
