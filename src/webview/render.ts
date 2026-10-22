@@ -32,7 +32,7 @@ function relativeTime(value?: string): string {
 }
 export function renderGraph(graph: GraphModel, reduced: boolean, selected?: string): string {
     if (!graph.nodes.length) return '<div class="graph-empty">打开仓库后，这里会显示提交历史。</div>';
-    const rowH = 44, laneW = 22, left = 17;
+    const rowH = 30, laneW = 18, left = 14;
     const railWidth = left + Math.max(1, graph.laneCount) * laneW + 10;
     const height = (Math.max(...graph.nodes.map(n => n.row)) + 1) * rowH;
     const x = (lane: number) => left + lane * laneW;

@@ -20,7 +20,7 @@ const app: {
     detailOpen: false, detailLoading: false, reviewOpen: false, review: freshReview(), requestId: 0, conflictsOpen: false, peekOpen: false, branchPickerOpen: false
 };
 const root = document.getElementById('app')!;
-root.innerHTML = `<header id="toolbar"></header><main class="task-workspace"><div id="task-context"></div><article id="task-card" class="task-card" aria-label="Git 任务"><header id="task-heading"></header><div id="branch-popover"></div><div id="graph"></div><div id="task-controls" class="task-controls"></div><section id="working-changes" aria-label="未暂存更改"></section><div id="task-notice"></div><section id="stage" aria-label="任务详情"></section></article><p id="task-explanation"></p><div id="task-meta"></div></main><footer id="status-bar"></footer><div id="announcer" class="sr-only" aria-live="polite"></div>`;
+root.innerHTML = `<header id="toolbar"></header><main class="task-workspace"><div id="task-context"></div><article id="task-card" class="task-card" aria-label="Git 任务"><header id="task-heading"></header><div id="branch-popover"></div><div id="graph"></div><section id="working-changes" aria-label="未暂存更改"></section><div id="task-notice"></div><section id="stage" aria-label="任务详情"></section><div id="task-controls" class="task-controls"></div></article><p id="task-explanation"></p><div id="task-meta"></div></main><footer id="status-bar"></footer><div id="announcer" class="sr-only" aria-live="polite"></div>`;
 const htmlCache = new Map<string, string>();
 let lastPhase = '';
 const post = (message: ToHost) => { api?.postMessage(message); };
@@ -63,7 +63,7 @@ function render(): void {
         ? `<button class="branch-trigger${app.branchPickerOpen ? ' active' : ''}" type="button" data-action="choose-branch" aria-haspopup="dialog" aria-expanded="${app.branchPickerOpen}" title="浏览分支">${esc(head)}${icon('chevron')}</button>`
         : `<code>${esc(head)}</code>`;
     update('task-context', `<div class="breadcrumb">${icon('branch')}<span>${esc(repoName)}</span><span class="context-divider">/</span>${branchTrigger}${(app.snapshot?.repositories.length || 0) > 1 ? `<select data-action="select-repo" aria-label="切换仓库" ${disabled}>${app.snapshot!.repositories.map(r => `<option value="${esc(r.id)}" ${r.id === app.snapshot!.repoId ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select>` : ''}</div>`);
-    update('task-heading', `<h1>${esc(taskTitle(task))}</h1>`);
+    update('task-heading', `<h1>${esc(taskTitle(task))}</h1><span class="task-state ${status.tone}"><i></i>${esc(status.label)}</span>`);
     update('branch-popover', app.branchPickerOpen && app.snapshot ? renderBranchPopover(app.snapshot) : '');
     const preview = app.snapshot?.preview;
     let graph = preview?.graph ?? app.snapshot?.graph;
@@ -87,11 +87,16 @@ function render(): void {
         : renderLiveStage(app.snapshot, app.live, app.selectedPath);
     update('stage', body);
     update('task-notice', app.notice ? `<div class="notice ${app.notice.level}" role="status">${esc(app.notice.text)}</div>` : '');
-    const quietOverview = current === 'idle' && app.live.kind === 'overview' && !app.detailOpen && !app.reviewOpen && !app.conflictsOpen;
-    update('task-explanation', quietOverview ? '' : taskExplanation(task));
+    update('task-explanation', taskExplanation(task));
+    const snap = app.snapshot;
+    const countPills = snap ? [
+        snap.workingTreeCount ? `<span class="meta-pill"><span class="meta-dot pending"></span>${snap.workingTreeCount} 未暂存</span>` : '',
+        snap.stagedCount ? `<span class="meta-pill"><span class="meta-dot staged"></span>${snap.stagedCount} 已暂存</span>` : '',
+        snap.conflicts.length ? `<span class="meta-pill conflict"><span class="meta-dot conflict"></span>${snap.conflicts.length} 冲突</span>` : ''
+    ].join('') : '';
     const patch = app.review.data?.patch;
     const stats = patch === undefined ? '' : `<span class="meta-pill" title="当前审查文件的增删行数"><span class="addition-text">+${patch.split('\n').filter(l => l.startsWith('+') && !l.startsWith('+++')).length}</span><span class="deletion-text">−${patch.split('\n').filter(l => l.startsWith('-') && !l.startsWith('---')).length}</span><span>当前文件</span></span>`;
-    update('task-meta', stats);
+    update('task-meta', countPills + stats);
     update('status-bar', `<span>Generative Git ${esc(version)}</span><span>本地操作，不自动推送</span>`);
     if (current !== lastPhase) {
         const stage = document.getElementById('stage')!;

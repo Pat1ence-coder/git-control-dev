@@ -395,3 +395,126 @@ textarea::placeholder { color: var(--muted); opacity: .65; }
   .commit-meta { display: none; }
   .branch-tag { max-width: 110px; font-size: 10.5px; }
 }
+
+/* P0 single-card migration: align the real workbench with the ref thread card. */
+:root {
+  --bg: #fff;
+  --card: #fff;
+  --soft: #f7f8fa;
+  --raised: #eef1f5;
+  --fg: #1f2328;
+  --muted: #667085;
+  --border: #e6e8eb;
+  --accent: #2563eb;
+  --accent-soft: #eef4ff;
+  --accent-contrast: #fff;
+  --shadow: 0 1px 2px #00000008;
+  --ui: var(--vscode-font-family, 'Inter'), -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Noto Sans SC', 'Source Han Sans SC', sans-serif;
+  --mono: var(--vscode-editor-font-family, 'SFMono-Regular'), 'Cascadia Code', 'Cascadia Mono', 'JetBrains Mono', Menlo, Consolas, 'Liberation Mono', 'Noto Sans Mono', 'Noto Sans CJK SC', 'Noto Sans SC', 'Source Han Sans SC', monospace;
+}
+body { background: #fff; font: 13px/1.6 var(--ui); }
+#toolbar { width: min(720px, 100%); padding: 18px 20px 8px; }
+.brand strong { font-size: 12px; }
+.brand > .icon { width: 16px; height: 16px; }
+.toolbar-controls { gap: 2px; }
+.task-workspace { width: min(720px, calc(100% - 32px)); margin: 22px auto 48px; }
+#task-context { margin: 0 2px 10px; }
+.breadcrumb { font-size: 11.5px; gap: 7px; }
+.breadcrumb > .icon { width: 13px; height: 13px; }
+.branch-trigger { font-size: 11.5px; }
+.task-card { border-radius: 12px; box-shadow: var(--shadow); }
+#task-heading { padding: 15px 17px 9px; align-items: flex-start; gap: 12px; }
+#task-heading h1 { font-size: 15px; font-weight: 600; letter-spacing: -.1px; line-height: 1.45; }
+.task-state { padding-top: 2px; font-size: 11.5px; gap: 6px; }
+.task-state i { width: 6px; height: 6px; }
+.task-state.neutral { color: var(--muted); }
+.task-state.ready { color: var(--accent); }
+.task-state.success { color: var(--success); }
+.task-state.warning { color: var(--warning); }
+.task-state.running { color: var(--accent); }
+#graph { padding: 3px 11px 8px; max-height: 330px; }
+.commit-tree { min-width: 430px; }
+.commit-list { grid-auto-rows: 30px; }
+.commit-row { height: 30px; gap: 6px; padding: 0 6px; border-radius: 5px; font-size: 13px; }
+.commit-subject { max-width: 60%; }
+.branch-tag { max-width: 190px; padding: 1px 4px; font-size: 10.5px; }
+.commit-meta { gap: 6px; font-size: 11px; padding-left: 6px; }
+.commit-meta code { font-size: 10px; }
+.commit-meta time::before { padding-right: 5px; }
+.graph-empty { padding: 30px 10px; font-size: 12px; }
+.task-controls { min-height: 44px; padding: 9px 17px 11px; border-top: 1px solid var(--border); gap: 10px; }
+.task-status-line { gap: 7px; font-size: 11.5px; }
+.working-changes { padding: 11px 17px 12px; }
+.working-changes h3 { font-size: 11.5px; }
+.working-list { max-height: 230px; margin-top: 2px; }
+.working-list li { min-height: 29px; grid-template-columns: 14px minmax(0, 1fr) 38px; gap: 7px; padding: 0 6px; border-radius: 5px; }
+.working-path { font-size: 11.5px; }
+.working-stage { font-size: 10.5px; }
+.working-empty { font-size: 11px; }
+#stage { padding: 13px 17px 16px; font-size: 12px; }
+#task-notice { padding: 0 17px; }
+.section-heading { margin-bottom: 12px; }
+.eyebrow { margin-bottom: 3px; font-size: 9.5px; }
+#stage h2 { margin: 3px 0; font-size: 15px; }
+.description { margin-top: 5px; font-size: 11.5px; line-height: 1.7; }
+#task-explanation { margin: 12px 2px 0; font-size: 12.5px; line-height: 1.8; }
+#task-meta { gap: 6px; margin: 10px 0 0 2px; }
+.meta-pill { gap: 5px; padding: 3px 9px; border-radius: 14px; font-size: 10.5px; }
+.meta-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.meta-dot.pending { background: var(--accent); }
+.meta-dot.staged { background: var(--success); }
+.meta-dot.conflict { background: var(--warning); }
+.meta-pill.conflict { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 30%, var(--border)); }
+#status-bar { width: min(720px, 100%); padding: 12px 20px 18px; font-size: 9.5px; }
+button { gap: 6px; padding: 5px 10px; border-radius: 6px; font-size: 11.5px; }
+button.primary { padding: 6px 14px; border-radius: 16px; background: var(--accent); color: var(--accent-contrast); font-weight: 500; }
+button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, #000); }
+button.conflict-primary { padding: 6px 14px; border-radius: 16px; }
+button.secondary { border-radius: 6px; }
+button.text-button { padding: 5px 7px; font-size: 11.5px; }
+button.icon-button { padding: 5px; }
+button.conflict-trigger { padding: 4px 8px; border-radius: 6px; font-size: 11px; }
+.branch-preview { padding: 6px 8px; font-size: 10.5px; }
+.branch-popover { top: 51px; right: 14px; width: min(340px, calc(100% - 28px)); padding: 12px; border-radius: 10px; }
+.branch-popover-head h3 { font-size: 12px; }
+.branch-popover .branch-row { padding: 8px 0; }
+.conflict-popover { width: 520px; max-width: calc(100cqw - 76px); border-radius: 12px; }
+.popover-heading { padding: 11px 14px; font-size: 11.5px; }
+.peek-file { padding: 11px 14px 6px; }
+.peek-file > div:first-child { margin-bottom: 7px; font-size: 11px; }
+.popover-footer { padding: 7px 14px 10px; }
+#stage .actions { gap: 8px; margin-top: 13px; }
+.review-grid { grid-template-columns: 160px minmax(0, 1fr); }
+.file-list-title { min-height: 38px; padding: 9px 11px; font-size: 10px; }
+.file-item { padding: 8px 9px; }
+.file-name { font-size: 10px; }
+.patch { max-height: 360px; min-height: 180px; font-size: 11px; line-height: 22px; }
+.patch-line { min-height: 22px; }
+.patch-line code { font-size: 11px; }
+.commit-composer { margin-top: 14px; padding-top: 14px; }
+.composer-heading { margin-bottom: 7px; font-size: 11.5px; }
+textarea { min-height: 76px; padding: 10px 12px; border-radius: 9px; font-size: 11.5px; line-height: 1.7; }
+.commit-bottom { margin-top: 10px; }
+.commit-bottom strong { font-size: 10.5px; }
+.commit-bottom p { font-size: 9.5px; }
+.commit-button { min-width: 112px; }
+.staged-summary { padding: 11px 0; margin-bottom: 12px; }
+.staged-summary strong { font-size: 11.5px; }
+.strategies .primary { background: var(--accent); color: #fff; }
+@container (max-width: 760px) {
+  #toolbar { padding: 14px 16px 6px; }
+  .task-workspace { width: calc(100% - 24px); margin-top: 16px; }
+  #task-heading { padding: 13px 14px 7px; }
+  #graph { padding-left: 7px; padding-right: 7px; }
+  .working-changes, #stage, .task-controls, #task-notice { padding-left: 14px; padding-right: 14px; }
+  .review-grid { grid-template-columns: 145px minmax(0, 1fr); }
+}
+@container (max-width: 480px) {
+  #task-heading h1 { font-size: 14px; }
+  .task-state { font-size: 10.5px; }
+  .commit-tree { min-width: 0; }
+  .commit-row { font-size: 12px; }
+  .commit-meta { display: none; }
+  .branch-tag { max-width: 110px; }
+  .review-grid { grid-template-columns: 1fr; }
+}

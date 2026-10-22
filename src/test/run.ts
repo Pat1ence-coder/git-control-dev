@@ -715,8 +715,8 @@ test('merge graph draws pending and join edges from parent tips toward the resul
         ]
     };
     const html = renderGraph(graph, false);
-    assert.match(html, /class="edge lane-1 pending" d="M39 66C39 44,17 44,17 22"/);
-    assert.match(html, /class="edge lane-0 join" d="M17 110L17 22"/);
+    assert.match(html, /class="edge lane-1 pending" d="M32 45C32 30,14 30,14 15"/);
+    assert.match(html, /class="edge lane-0 join" d="M14 75L14 15"/);
     assert.equal(graph.edges[0].from, 'merge');
     assert.equal(graph.nodes[0].row, 0);
     const reduced = renderGraph(graph, true);
