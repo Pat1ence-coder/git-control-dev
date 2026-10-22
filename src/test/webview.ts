@@ -254,3 +254,13 @@ test('empty repository offers Source Control instead of a demo entry', () => {
     assert.match(ui.get('task-controls').innerHTML, /打开 Source Control/);
     assert.ok(!ui.get('task-controls').innerHTML.includes('运行演示'));
 });
+test('quick composer hands its message to the real review flow', () => {
+    const ui = harness();
+    ui.message({ type: 'hydrate', snapshot: makeSnapshot({ stagedCount: 1 }) });
+    (ui.get('quick-message') as any).value = 'fix: quick composer';
+    ui.click('quick-review');
+    assert.equal(ui.posted.at(-1).type, 'review-staged');
+    assert.equal(ui.phase(), 'reviewing');
+    ui.message({ type: 'staged-review', requestId: ui.posted.at(-1).requestId, review: makeReview() });
+    assert.match(ui.get('stage').innerHTML, /fix: quick composer/);
+});
