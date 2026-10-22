@@ -155,9 +155,11 @@ test('GitService: real conflicts, resolution/staging, history diff, abort and wo
     git('commit', '-m', 'base');
     const rootHash = git('rev-parse', 'HEAD');
     git('checkout', '-b', 'feature');
+    git('config', 'user.name', 'Incoming Author');
     await fs.writeFile(path.join(dir, 'file.ts'), 'incoming\n');
     git('commit', '-am', 'feature');
     git('checkout', 'main');
+    git('config', 'user.name', 'Current Author');
     await fs.writeFile(path.join(dir, 'file.ts'), 'current\n');
     git('commit', '-am', 'main');
     git('update-ref', 'refs/remotes/origin/main', git('rev-parse', 'HEAD'));
@@ -165,7 +167,7 @@ test('GitService: real conflicts, resolution/staging, history diff, abort and wo
     const committed = new host.EventEmitter<void>();
     const uri = (p: string) => host.Uri.file(p) as any;
     const changes = (a: string, b: string): Change[] => git('diff', '--name-only', '-z', `${a}...${b}`).split('\0').filter(Boolean).map(p => ({ uri: uri(path.join(commandDir, p)), originalUri: uri(path.join(commandDir, p)), status: 0 }));
-    const commit = (hash: string): Commit => { const parts = git('show', '-s', '--format=%H%x00%P%x00%s', hash).split('\0'); return { hash: parts[0], parents: parts[1] ? parts[1].split(' ') : [], message: parts[2] }; };
+    const commit = (hash: string): Commit => { const parts = git('show', '-s', '--format=%H%x00%P%x00%an%x00%s', hash).split('\0'); return { hash: parts[0], parents: parts[1] ? parts[1].split(' ') : [], authorName: parts[2], message: parts[3] }; };
     const repo: Repository = {
         rootUri: uri(dir), onDidCommit: committed.event, inputBox: { value: '' }, state: { refs: [], mergeChanges: [], workingTreeChanges: [], indexChanges: [], onDidChange: changed.event },
         async getConfig(key) { return git('config', '--get', key); },
@@ -200,7 +202,11 @@ test('GitService: real conflicts, resolution/staging, history diff, abort and wo
             this.state.untrackedChanges = git('ls-files', '--others', '--exclude-standard', '-z').split('\0').filter(Boolean).map(p => file(p, 7));
             changed.fire();
         },
-        async log() { return git('log', '--all', '--topo-order', '--format=%H', '-36').split('\n').map(commit); },
+        async log(options) {
+            if (!options?.path) return git('log', '--all', '--topo-order', '--format=%H', '-36').split('\n').map(commit);
+            const ref = options.refNames?.[0] ?? 'HEAD';
+            return git('log', '--topo-order', '--format=%H', '-1', ref, '--', options.path).split('\n').filter(Boolean).map(commit);
+        },
         async add(paths) { git('add', '--', ...paths); }, async merge(ref) { git('merge', ref); }, async mergeAbort() { git('merge', '--abort'); },
         async getCommit(hash) { return commit(hash); }, async show(ref, p) { return git('show', `${ref}:${path.isAbsolute(p) ? path.relative(commandDir, p) : p}`); },
         async getObjectDetails(ref, p) {
@@ -340,6 +346,8 @@ test('GitService: real conflicts, resolution/staging, history diff, abort and wo
             assert.equal((await service.merge('feature')).conflict, true);
             const snapshot = await service.snapshot();
             assert.equal(snapshot?.conflicts.length, 1);
+            assert.equal(snapshot?.conflicts[0]?.hunks[0]?.currentAuthor, 'Current Author');
+            assert.equal(snapshot?.conflicts[0]?.hunks[0]?.incomingAuthor, 'Incoming Author');
             assert.equal(snapshot?.workingTreeCount, 0, 'conflicts have their own list');
             assert.ok(snapshot?.mergeHead);
             await assert.rejects(() => service.stage('file.ts'), /冲突标记/);

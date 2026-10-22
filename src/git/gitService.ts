@@ -253,6 +253,14 @@ export class GitService implements vscode.Disposable {
             throw new UserFacingError('符号链接请在源代码管理中处理。');
         return uri;
     }
+    private async fileAuthor(repo: Repository, ref: string | undefined, relative: string): Promise<string | undefined> {
+        if (!ref) return undefined;
+        try {
+            const commits = await repo.log({ maxEntries: 1, refNames: [ref], path: relative });
+            return commits[0]?.authorName?.trim() || undefined;
+        }
+        catch { return undefined; }
+    }
     async snapshot(previewRef?: string): Promise<Snapshot | null> {
         const repo = this.repository;
         if (!repo)
@@ -273,6 +281,8 @@ export class GitService implements vscode.Disposable {
                 commits = await repo.log({ maxEntries: 36 });
             }
             catch { /* unborn repository */ }
+        const [mergeHash, mergeMessage] = await Promise.all([this.gitFile(repo, 'MERGE_HEAD'), this.gitFile(repo, 'MERGE_MSG')]);
+        const mergingRef = /Merge (?:remote-tracking )?branch '([^']+)'/.exec(mergeMessage)?.[1];
         const conflicts: ConflictFile[] = await Promise.all(repo.state.mergeChanges.map(async (change) => {
             const relative = path.relative(repo.rootUri.fsPath, change.uri.fsPath);
             const file: ConflictFile = { path: relative, status: statusLabel(change.status), hunks: [] };
@@ -284,8 +294,13 @@ export class GitService implements vscode.Disposable {
             try {
                 const uri = await this.confined(repo, relative);
                 const text = await this.readDocument(uri);
-                file.hunks = parseConflict(text).map(h => { const truncate = (s: string) => { const lines = s.split('\n'); if (lines.length > 80)
+                const hunks = parseConflict(text).map(h => { const truncate = (s: string) => { const lines = s.split('\n'); if (lines.length > 80)
                     file.truncated = true; return lines.slice(0, 80).join('\n'); }; return { ...h, current: truncate(h.current), incoming: truncate(h.incoming) }; });
+                const [currentAuthor, incomingAuthor] = await Promise.all([
+                    this.fileAuthor(repo, 'HEAD', relative),
+                    this.fileAuthor(repo, mergingRef, relative)
+                ]);
+                file.hunks = hunks.map(h => ({ ...h, currentAuthor, incomingAuthor }));
                 if (!file.hunks.length)
                     file.note = '没有标准冲突块。请在编辑器检查内容，再暂存当前文件。';
             }
@@ -295,13 +310,12 @@ export class GitService implements vscode.Disposable {
             }
             return file;
         }));
-        const [mergeHash, mergeMessage] = await Promise.all([this.gitFile(repo, 'MERGE_HEAD'), this.gitFile(repo, 'MERGE_MSG')]);
         const previewBranch = previewRef ? branchList.find(branch => branch.ref === previewRef) : undefined;
         const preview = previewBranch && !previewBranch.current ? await this.branchPreview(repo, previewBranch, branchList) : undefined;
         let graph = layoutCommits(commits.map(c => ({ ...c, badges: branches.filter(r => r.commit === c.hash).map(r => r.name!) })), repo.state.HEAD?.commit);
         if (mergeHash && !conflicts.length && repo.state.HEAD?.commit)
             graph = withPendingMerge(graph, repo.state.HEAD.commit, mergeHash.split('\n')[0]);
-        return { repoId: repo.rootUri.fsPath, repoName: path.basename(repo.rootUri.fsPath), repositories: (this.api?.repositories || []).map(r => ({ id: r.rootUri.fsPath, name: path.basename(r.rootUri.fsPath) })), headName: repo.state.HEAD?.name || 'HEAD', headHash: repo.state.HEAD?.commit, branches: branches.map(r => r.name!), conflicts, workingTreeCount: workingTreeFiles.length, workingTreeFiles, stagedCount: repo.state.indexChanges.length, mergeHead: !!mergeHash, mergingRef: /Merge (?:remote-tracking )?branch '([^']+)'/.exec(mergeMessage)?.[1], rebasing: !!repo.state.rebaseCommit, canMerge: typeof repo.merge === 'function', canAbort: typeof repo.mergeAbort === 'function', graph, branchList, preview };
+        return { repoId: repo.rootUri.fsPath, repoName: path.basename(repo.rootUri.fsPath), repositories: (this.api?.repositories || []).map(r => ({ id: r.rootUri.fsPath, name: path.basename(r.rootUri.fsPath) })), headName: repo.state.HEAD?.name || 'HEAD', headHash: repo.state.HEAD?.commit, branches: branches.map(r => r.name!), conflicts, workingTreeCount: workingTreeFiles.length, workingTreeFiles, stagedCount: repo.state.indexChanges.length, mergeHead: !!mergeHash, mergingRef, rebasing: !!repo.state.rebaseCommit, canMerge: typeof repo.merge === 'function', canAbort: typeof repo.mergeAbort === 'function', graph, branchList, preview };
     }
     async merge(ref: string): Promise<{
         conflict: boolean;

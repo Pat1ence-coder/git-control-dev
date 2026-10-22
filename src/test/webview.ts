@@ -66,7 +66,7 @@ const makeConflict = (): ConflictFile => ({
     path: 'src/checkout.ts', status: '双方修改',
     hunks: [{
         start: 9, end: 15, current: 'const total = 1;', incoming: 'const total = 2;',
-        currentLabel: 'HEAD', incomingLabel: 'feature', currentStart: 12, incomingStart: 14,
+        currentLabel: 'HEAD', incomingLabel: 'feature', currentAuthor: 'Lena Park', incomingAuthor: 'You', currentStart: 12, incomingStart: 14,
         before: ['export function total() {', '  // shared context'], beforeStart: 10,
         after: ['}'], afterStart: 16
     }]
@@ -212,7 +212,7 @@ test('task card: conflict peek and Escape preserve the workflow until an explici
     assert.match(ui.get('task-controls').innerHTML, /id="conflict-popover"/);
     assert.match(ui.get('task-controls').innerHTML, /conflict-popover is-open/);
     assert.match(ui.get('task-controls').innerHTML, /src\/checkout.ts/);
-    assert.match(ui.get('task-controls').innerHTML, /HEAD 与 feature 修改了相同的代码/);
+    assert.match(ui.get('task-controls').innerHTML, /Lena Park 与 You 修改了相同的代码/);
     ui.key('Escape');
     assert.equal(ui.phase(), 'conflict');
     assert.ok(!ui.get('task-controls').innerHTML.includes('is-open'));

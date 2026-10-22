@@ -7,6 +7,8 @@ export interface Hunk {
     incoming: string;
     currentLabel: string;
     incomingLabel: string;
+    currentAuthor?: string;
+    incomingAuthor?: string;
     currentStart?: number;
     incomingStart?: number;
     before?: string[];

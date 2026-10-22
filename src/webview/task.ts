@@ -21,16 +21,18 @@ function excerpt(file: ConflictFile): string {
     return file.hunks.slice(0, 3).map(h => {
         const a = h.current.split('\n'), b = h.incoming.split('\n');
         const firstDifference = Math.max(0, a.findIndex((line, i) => line !== b[i]));
-        const currentLabel = clipChars(h.currentLabel || '当前', 18);
-        const incomingLabel = clipChars(h.incomingLabel || '传入', 18);
-        return `<div class="peek-file"><div><strong>${esc(file.path)}</strong><span>冲突块起始行 ${h.start + 1}</span></div><div class="peek-line current"><span title="${esc(h.currentLabel || '当前')}">${esc(currentLabel)}</span><code>${esc(clipChars(a[firstDifference] || '（空）', 150))}</code></div><div class="peek-line incoming"><span title="${esc(h.incomingLabel || '传入')}">${esc(incomingLabel)}</span><code>${esc(clipChars(b[firstDifference] || '（空）', 150))}</code></div></div>`;
+        const currentName = clipChars(h.currentAuthor || h.currentLabel || '当前', 18);
+        const incomingName = clipChars(h.incomingAuthor || h.incomingLabel || '传入', 18);
+        const currentTitle = h.currentAuthor ? `${h.currentAuthor} · ${h.currentLabel}` : h.currentLabel;
+        const incomingTitle = h.incomingAuthor ? `${h.incomingAuthor} · ${h.incomingLabel}` : h.incomingLabel;
+        return `<div class="peek-file"><div><strong>${esc(file.path)}</strong><span>冲突块起始行 ${h.start + 1}</span></div><div class="peek-line current"><span title="${esc(currentTitle || '当前')}">${esc(currentName)}</span><code>${esc(clipChars(a[firstDifference] || '（空）', 150))}</code></div><div class="peek-line incoming"><span title="${esc(incomingTitle || '传入')}">${esc(incomingName)}</span><code>${esc(clipChars(b[firstDifference] || '（空）', 150))}</code></div></div>`;
     }).join('');
 }
 function conflictControl(view: TaskView, files: ConflictFile[]): string {
     const count = files.reduce((n, f) => n + Math.max(1, f.hunks.length), 0);
     const first = files.find(file => file.hunks.length)?.hunks[0];
     const heading = first
-        ? `${esc(clipChars(first.currentLabel || '当前', 18))} 与 ${esc(clipChars(first.incomingLabel || '传入', 18))} 修改了相同的代码`
+        ? `${esc(clipChars(first.currentAuthor || first.currentLabel || '当前', 18))} 与 ${esc(clipChars(first.incomingAuthor || first.incomingLabel || '传入', 18))} 修改了相同的代码`
         : '双方修改了相同的代码';
     return `<div class="conflict-peek">${button('peek-conflicts', `${icon('warning')}<span>${count} 处冲突</span><span class="subtle">· ${files.length} 个文件</span>`, 'conflict-trigger', `aria-expanded="${view.peekOpen}" aria-controls="conflict-popover"`)}<section id="conflict-popover" class="conflict-popover${view.peekOpen ? ' is-open' : ''}" aria-label="冲突摘要"><div class="popover-heading"><strong>${heading}</strong></div>${files.slice(0, 3).map(excerpt).join('')}<div class="popover-footer"><span>这里只展示冲突片段</span>${button('show-conflicts', '查看完整冲突', 'text-button')}</div></section></div>`;
 }
