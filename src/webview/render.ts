@@ -1,6 +1,6 @@
 import { esc, clipChars } from '../shared/html';
 import type { GraphModel } from '../shared/model';
-import type { ConflictFile, CommitDetail, Snapshot, Strategy, StagedReview, BranchInfo, PullRequestInfo } from '../shared/protocol';
+import type { ConflictFile, CommitDetail, Snapshot, Strategy, StagedReview, BranchInfo, PullRequestInfo, PullRequestState } from '../shared/protocol';
 export type LiveState = {
     kind: 'overview';
 } | {
@@ -75,6 +75,23 @@ export function icon(name: 'branch' | 'file' | 'arrow' | 'check' | 'expand' | 'r
         commit: '<circle cx="10" cy="10" r="4"/><path d="M2 10h4m8 0h4"/>'
     };
     return `<svg class="icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>`;
+}
+export function renderPullRequestState(state?: PullRequestState): string {
+    if (!state) return '';
+    if (state.kind === 'ok') {
+        const pr = state.pullRequest;
+        const meta = `<div class="pr-meta"><span class="pr-number">#${pr.number}</span><span class="pr-ref">${esc(pr.headRef)} → ${esc(pr.baseRef)}</span><button type="button" data-action="open-pull-request" class="text-button">在 GitHub 打开</button><button type="button" data-action="refresh-github" class="text-button">刷新</button></div>`;
+        return `<div class="pr-state ok">${meta}${renderPullRequestChecks(pr)}</div>`;
+    }
+    if (state.reason === 'not-github') return '';
+    const retry = button('refresh-github', '刷新', 'text-button');
+    if (state.reason === 'no-auth')
+        return `<div class="pr-state unavailable"><span>GitHub 未连接</span>${button('connect-github', '连接 GitHub', 'primary')}${retry}</div>`;
+    if (state.reason === 'no-pr')
+        return `<div class="pr-state"><span>当前分支没有 PR</span>${retry}</div>`;
+    if (state.reason === 'rate-limited')
+        return `<div class="pr-state unavailable"><span>GitHub 请求受限，请稍后重试</span>${retry}</div>`;
+    return `<div class="pr-state unavailable"><span>GitHub 暂不可用</span>${retry}</div>`;
 }
 export function renderPullRequestChecks(pr?: PullRequestInfo): string {
     if (!pr) return '';

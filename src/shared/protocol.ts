@@ -54,6 +54,10 @@ export interface PullRequestInfo {
     checks: PullRequestCheck[];
     checksUnavailable?: boolean;
 }
+export type PullRequestUnavailableReason = 'no-auth' | 'not-github' | 'no-pr' | 'rate-limited' | 'error';
+export type PullRequestState =
+    | { kind: 'ok'; pullRequest: PullRequestInfo }
+    | { kind: 'unavailable'; reason: PullRequestUnavailableReason };
 export interface Snapshot {
     repoId: string;
     repoName: string;
@@ -106,7 +110,7 @@ export interface StagedReview {
     blocked?: string;
 }
 export type ToHost = {
-    type: 'ready' | 'refresh' | 'abort-merge' | 'suggest-commit' | 'open-scm' | 'open-workbench' | 'native-stage-conflicts' | 'preview-current';
+    type: 'ready' | 'refresh' | 'abort-merge' | 'suggest-commit' | 'open-scm' | 'open-workbench' | 'native-stage-conflicts' | 'preview-current' | 'connect-github' | 'refresh-github' | 'open-pull-request';
 } | {
     type: 'select-repo';
     repoId: string;
@@ -177,7 +181,7 @@ export type ToWebview = {
     error?: string;
 } | {
     type: 'pull-request';
-    pullRequest: PullRequestInfo | null;
+    state: PullRequestState;
 };
 export function asHostMessage(value: unknown): ToHost | undefined {
     if (!value || typeof value !== 'object')
@@ -192,7 +196,10 @@ export function asHostMessage(value: unknown): ToHost | undefined {
         case 'open-scm':
         case 'native-stage-conflicts':
         case 'open-workbench':
-        case 'preview-current': return { type: m.type };
+        case 'preview-current':
+        case 'connect-github':
+        case 'refresh-github':
+        case 'open-pull-request': return { type: m.type };
         case 'select-repo':
             if (str('repoId'))
                 return m as unknown as ToHost;

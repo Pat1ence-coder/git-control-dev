@@ -1,6 +1,6 @@
-import type { ToHost, ToWebview, Snapshot, Strategy, CommitDetail, PullRequestInfo } from '../shared/protocol';
+import type { ToHost, ToWebview, Snapshot, Strategy, CommitDetail, PullRequestState } from '../shared/protocol';
 import { esc } from '../shared/html';
-import { button, icon, renderGraph, renderLoadingGraph, renderPullRequestChecks, renderLiveStage, renderBranchPopover, livePhase, renderCommitDetail, renderReview, renderWorkingTree, type ReviewState, type LiveState } from './render';
+import { button, icon, renderGraph, renderLoadingGraph, renderPullRequestState, renderLiveStage, renderBranchPopover, livePhase, renderCommitDetail, renderReview, renderWorkingTree, type ReviewState, type LiveState } from './render';
 import { version } from '../../package.json';
 import { renderTaskControls, type TaskView } from './task';
 import { presentTask } from './presentation';
@@ -12,7 +12,7 @@ const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 const freshReview = (): ReviewState => ({ loading: false, draft: '', dirty: false, committing: false });
 const drafts = new Map<string, string>();
 const app: {
-    booted: boolean; snapshot: Snapshot | null; live: LiveState; pullRequest?: PullRequestInfo;
+    booted: boolean; snapshot: Snapshot | null; live: LiveState; pullRequestState?: PullRequestState;
     selectedPath?: string; notice?: { text: string; level: string };
     detailOpen: boolean; detail?: CommitDetail; detailHash?: string; detailLoading: boolean; detailError?: string;
     reviewOpen: boolean; review: ReviewState; requestId: number; conflictsOpen: boolean; peekOpen: boolean; branchPickerOpen: boolean;
@@ -58,7 +58,7 @@ function render(): void {
     const repoName = app.snapshot?.repoName || '未打开仓库';
     const head = app.snapshot?.headName || '—';
     const task: TaskView = { ...app, phase: current, busy: busy() };
-    const presentation = presentTask({ phase: current, snapshot: app.snapshot, live: app.live, pullRequest: app.pullRequest });
+    const presentation = presentTask({ phase: current, snapshot: app.snapshot, live: app.live, pullRequest: app.pullRequestState?.kind === 'ok' ? app.pullRequestState.pullRequest : undefined });
     update('toolbar', `<div class="brand">${icon('branch')}<strong>Generative Git</strong></div><div class="toolbar-controls">${button('refresh', icon('refresh'), 'icon-button', 'aria-label="刷新" title="刷新"')}${api ? button('open-workbench', icon('expand'), 'icon-button', 'aria-label="在编辑器中展开" title="在编辑器中展开"') : ''}</div>`);
     const branchTrigger = app.snapshot
         ? `<button class="branch-trigger${app.branchPickerOpen ? ' active' : ''}" type="button" data-action="choose-branch" aria-haspopup="dialog" aria-expanded="${app.branchPickerOpen}" title="浏览分支">${esc(head)}${icon('chevron')}</button>`
@@ -81,7 +81,7 @@ function render(): void {
     }
     const graphBanner = preview ? `<div class="branch-preview" role="status"><span>${icon('branch')}只读预览 <strong>${esc(preview.name)}</strong><span>不会切换 HEAD</span></span>${button('preview-current', '返回当前分支', 'text-button')}</div>` : '';
     update('graph', graphBanner + (graph ? renderGraph(graph, reduced, app.detailOpen ? app.detailHash : undefined) : app.booted ? '<div class="graph-empty">打开本地仓库后，这里会显示提交历史。</div>' : renderLoadingGraph()));
-    update('pr-checks', renderPullRequestChecks(app.pullRequest));
+    update('pr-checks', renderPullRequestState(app.pullRequestState));
     update('task-controls', renderTaskControls(task, presentation.footText));
     const hasWorking = !!app.snapshot && ((app.snapshot.workingTreeFiles?.length ?? 0) > 0 || app.snapshot.workingTreeCount > 0);
     update('working-changes', hasWorking ? renderWorkingTree(app.snapshot!, busy()) : '');
@@ -162,7 +162,7 @@ function inspect(hash: string, path?: string): void {
     render();
 }
 function action(name: string, element: HTMLElement): void {
-    if (busy() && !['refresh', 'open-workbench'].includes(name)) return;
+    if (busy() && !['refresh', 'open-workbench', 'connect-github', 'refresh-github', 'open-pull-request'].includes(name)) return;
     switch (name) {
         case 'resolve': resolveLive(element.dataset.strategy as Strategy); break;
         case 'peek-conflicts': app.peekOpen = !app.peekOpen; render(); break;
@@ -173,12 +173,12 @@ function action(name: string, element: HTMLElement): void {
         case 'preview-branch': {
             const ref = element.dataset.ref;
             if (!ref) return;
-            app.pullRequest = undefined;
+            app.pullRequestState = undefined;
             post({ type: 'preview-branch', ref });
             break;
         }
         case 'preview-current':
-            app.pullRequest = undefined;
+            app.pullRequestState = undefined;
             post({ type: 'preview-current' });
             break;
         case 'collapse-task': closeDetail(); app.reviewOpen = false; app.review.loading = false; app.conflictsOpen = false; app.peekOpen = false; app.branchPickerOpen = false; render(); break;
@@ -211,7 +211,7 @@ function action(name: string, element: HTMLElement): void {
             app.live = { kind: 'resolving', path: '官方冲突处理' };
             post({ type: 'native-stage-conflicts' }); render(); break;
         case 'stage': { const f = selectedFile(); if (f) { app.live = { kind: 'resolving', path: f.path }; post({ type: 'stage', path: f.path }); render(); } break; }
-        case 'open-scm': case 'suggest-commit': case 'open-workbench': post({ type: name }); break;
+        case 'open-scm': case 'suggest-commit': case 'open-workbench': case 'connect-github': case 'refresh-github': case 'open-pull-request': post({ type: name }); break;
         case 'copy': void copyPrompt(); break;
         case 'inspect-commit': inspect(element.dataset.hash!); break;
         case 'history-file': if (app.detailHash) inspect(app.detailHash, element.dataset.path); break;
@@ -242,7 +242,7 @@ root.addEventListener('change', event => {
     if (select.dataset.action === 'select-repo' && !busy()) {
         const quick = document.getElementById('quick-message') as HTMLTextAreaElement | null;
         if (quick) quick.value = '';
-        app.pullRequest = undefined;
+        app.pullRequestState = undefined;
         closeDetail(); resetReview(); app.conflictsOpen = false; app.peekOpen = false; app.branchPickerOpen = false; app.selectedPath = undefined; app.notice = undefined; app.live = { kind: 'overview' };
         post({ type: 'select-repo', repoId: select.value }); render();
     }
@@ -274,16 +274,16 @@ window.addEventListener('keydown', event => {
 window.addEventListener('message', (event: MessageEvent<ToWebview>) => {
     const m = event.data;
     switch (m.type) {
-        case 'hydrate': app.booted = true; app.snapshot = m.snapshot; app.pullRequest = undefined; if (m.notice) app.notice = { text: m.notice, level: 'info' }; break;
+        case 'hydrate': app.booted = true; app.snapshot = m.snapshot; app.pullRequestState = undefined; if (m.notice) app.notice = { text: m.notice, level: 'info' }; break;
         case 'snapshot': {
             const previous = app.snapshot; app.snapshot = m.snapshot;
-            if (previous?.repoId !== m.snapshot?.repoId || previous?.headName !== m.snapshot?.headName || previous?.headHash !== m.snapshot?.headHash || m.snapshot?.preview) app.pullRequest = undefined;
+            if (previous?.repoId !== m.snapshot?.repoId || previous?.headName !== m.snapshot?.headName || previous?.headHash !== m.snapshot?.headHash || m.snapshot?.preview) app.pullRequestState = undefined;
             if (previous?.repoId !== m.snapshot?.repoId) { closeDetail(); resetReview(); app.conflictsOpen = false; app.peekOpen = false; app.branchPickerOpen = false; app.selectedPath = undefined; }
             if (app.reviewOpen && !app.review.committing && previous && (previous.headHash !== m.snapshot?.headHash || previous.stagedCount !== m.snapshot?.stagedCount)) app.review.error = '仓库状态已变化，请重新加载审查。';
             break;
         }
         case 'notice': app.notice = m; break;
-        case 'pull-request': app.pullRequest = m.pullRequest ?? undefined; break;
+        case 'pull-request': app.pullRequestState = m.state; break;
         case 'live-result':
             app.live = m.kind === 'error' ? { kind: 'error', text: m.text || '操作未完成。' } : { kind: 'overview' };
             if (m.kind !== 'error' && m.text) app.notice = { level: 'info', text: m.text };

@@ -613,3 +613,13 @@ button.conflict-primary:hover:not(:disabled) { background: color-mix(in srgb, va
 .pr-check.neutral { color: var(--muted); }
 .pr-check.unavailable { background: var(--soft); }
 .pr-check span { color: var(--muted); font-size: 9.5px; }
+
+/* GitHub connection state and PR metadata */
+#pr-checks { padding: 8px 17px; }
+.pr-state { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 10.5px; }
+.pr-state.unavailable { color: var(--muted); }
+.pr-state .primary { padding: 4px 11px; font-size: 10.5px; }
+.pr-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; font-size: 10.5px; }
+.pr-number { color: var(--fg); font-weight: 500; }
+.pr-ref { color: var(--muted); font-family: var(--mono); font-size: 10px; }
+.pr-meta .text-button { padding: 2px 4px; font-size: 10px; }

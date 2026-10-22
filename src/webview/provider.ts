@@ -2,13 +2,14 @@ import { UserFacingError } from '../git/errors';
 import * as vscode from 'vscode';
 import { randomBytes } from 'node:crypto';
 import { GitService, describeGitError } from '../git/gitService';
-import { asHostMessage, type ToHost, type ToWebview } from '../shared/protocol';
+import { asHostMessage, type ToHost, type ToWebview, type PullRequestState } from '../shared/protocol';
 export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     private view?: vscode.WebviewView | vscode.WebviewPanel;
     private panel?: vscode.WebviewPanel;
     private ready = false;
     private previewRef?: string;
     private prRequest = 0;
+    private pullRequestUrl?: string;
     private queue: Promise<void> = Promise.resolve();
     private readonly subscriptions: vscode.Disposable[] = [];
     constructor(private readonly context: vscode.ExtensionContext, private readonly git: GitService, private readonly operation = { busy: false }) {
@@ -57,16 +58,20 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
         const request = ++this.prRequest;
         if (!this.ready) return;
         if (this.previewRef) {
-            this.post({ type: 'pull-request', pullRequest: null });
+            this.pullRequestUrl = undefined;
+            this.post({ type: 'pull-request', state: { kind: 'unavailable', reason: 'not-github' } });
             return;
         }
         const pullRequest = this.git.pullRequest;
         if (typeof pullRequest !== 'function') return;
-        let value = null;
-        try { value = await pullRequest.call(this.git) ?? null; }
-        catch { value = null; }
+        let state: PullRequestState;
+        try {
+            state = await pullRequest.call(this.git) ?? { kind: 'unavailable', reason: 'not-github' };
+        }
+        catch { state = { kind: 'unavailable', reason: 'error' }; }
         if (request !== this.prRequest || !this.ready) return;
-        this.post({ type: 'pull-request', pullRequest: value });
+        this.pullRequestUrl = state.kind === 'ok' ? state.pullRequest.url : undefined;
+        this.post({ type: 'pull-request', state });
     }
     async refresh(): Promise<void> {
         await this.git.refresh();
@@ -201,6 +206,28 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
             case 'stage':
                 await this.withLock(async () => { await this.git.stage(message.path); await this.enqueue(() => this.pushSnapshot(true)); this.post({ type: 'live-result', kind: 'resolved', text: '当前文件已暂存。' }); });
                 break;
+            case 'connect-github': {
+                const connected = await this.git.connectGitHub();
+                if (!connected) this.notify('未连接 GitHub，PR/checks 仍不可用。');
+                else this.git.clearPullRequestCache();
+                await this.enrichPullRequest();
+                break;
+            }
+            case 'refresh-github':
+                this.git.clearPullRequestCache();
+                await this.enrichPullRequest();
+                break;
+            case 'open-pull-request': {
+                const url = this.pullRequestUrl;
+                if (!url) break;
+                try {
+                    const parsed = new URL(url);
+                    if (parsed.protocol !== 'https:' || parsed.hostname !== 'github.com' || !/^\/[^/]+\/[^/]+\/pull\/\d+/.test(parsed.pathname)) break;
+                    await vscode.env.openExternal(vscode.Uri.parse(url));
+                }
+                catch { /* ignore malformed URL */ }
+                break;
+            }
         }
     }
     private html(webview: vscode.Webview): string {

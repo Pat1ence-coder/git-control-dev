@@ -69,10 +69,19 @@ export function parseGitHubRemote(remote: string): GitHubRemote | undefined {
 }
 
 async function defaultSession(): Promise<GitHubAuth | undefined> {
-    // Never prompt while refreshing the workbench. A "Connect GitHub" action can
-    // later call createIfNone: true explicitly.
+    // Never prompt while refreshing the workbench. A "Connect GitHub" action
+    // calls connectGitHub() explicitly.
     const session = await vscode.authentication.getSession('github', ['repo'], { createIfNone: false });
     return session ? { accessToken: session.accessToken } : undefined;
+}
+
+/** Explicit user action only. The token stays inside VS Code and is never returned. */
+export async function connectGitHub(): Promise<boolean> {
+    try {
+        const session = await vscode.authentication.getSession('github', ['repo'], { createIfNone: true });
+        return !!session?.accessToken;
+    }
+    catch { return false; }
 }
 
 function headers(token: string): Record<string, string> {

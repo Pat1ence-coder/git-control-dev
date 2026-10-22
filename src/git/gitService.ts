@@ -3,7 +3,7 @@ import path from 'node:path';
 import { realpath } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import type { GitAPI, GitExtension, Repository, Commit, Ref, Change } from './types';
-import type { Snapshot, ConflictFile, Strategy, CommitDetail, StagedReview, BranchInfo, BranchPreview, PullRequestInfo } from '../shared/protocol';
+import type { Snapshot, ConflictFile, Strategy, CommitDetail, StagedReview, BranchInfo, BranchPreview, PullRequestState } from '../shared/protocol';
 import { applyResolution, hasConflictMarkers, parseConflict } from './conflicts';
 import { layoutCommits, withPendingMerge } from './layout';
 import { resolveInside, samePath } from './paths';
@@ -12,7 +12,7 @@ import { statusLabel } from './status';
 import { ResolutionSafety } from './safety';
 import { nativeCommit, requireNativeCommand } from './nativeGit';
 import { GitMetadata } from './metadata';
-import { readPullRequest } from './github';
+import { connectGitHub as connectGitHubSession, readPullRequest } from './github';
 import { describeGitError, UserFacingError } from './errors';
 export { describeGitError } from './errors';
 export const MAX_FILE_BYTES = 180000;
@@ -27,7 +27,7 @@ export class GitService implements vscode.Disposable {
     private ready: Promise<void> = Promise.resolve();
     private readonly reviewTokens = new Map<string, string>();
     private readonly metadata = new GitMetadata();
-    private pullRequestCache?: { key: string; at: number; value: PullRequestInfo | undefined };
+    private pullRequestCache?: { key: string; at: number; value: PullRequestState };
     startupProblem?: string;
     constructor(private readonly state: vscode.Memento, private readonly output: vscode.OutputChannel,
         private readonly safety: ResolutionSafety) { this.selected = state.get<string>('repo'); }
@@ -263,32 +263,42 @@ export class GitService implements vscode.Disposable {
         }
         catch { return undefined; }
     }
-    async pullRequest(): Promise<PullRequestInfo | undefined> {
+    async pullRequest(): Promise<PullRequestState> {
         const repo = this.repository;
         const branch = repo?.state.HEAD?.name;
-        if (!repo || !branch) return undefined;
+        if (!repo || !branch) return { kind: 'unavailable', reason: 'no-pr' };
         let remote: string;
         try { remote = (await repo.getConfig('remote.origin.url')).trim(); }
-        catch { return undefined; }
-        if (!remote) return undefined;
+        catch { return { kind: 'unavailable', reason: 'not-github' }; }
+        if (!remote) return { kind: 'unavailable', reason: 'not-github' };
         const key = `${remote}\0${branch}`;
         const now = Date.now();
         if (this.pullRequestCache && this.pullRequestCache.key === key && now - this.pullRequestCache.at < 30_000)
             return this.pullRequestCache.value;
         const result = await readPullRequest(remote, branch);
-        const value: PullRequestInfo | undefined = result.kind === 'ok' ? {
-            number: result.pullRequest.number,
-            title: result.pullRequest.title,
-            state: result.pullRequest.state,
-            url: result.pullRequest.url,
-            headSha: result.pullRequest.headSha,
-            headRef: result.pullRequest.headRef,
-            baseRef: result.pullRequest.baseRef,
-            checks: result.pullRequest.checks,
-            checksUnavailable: result.pullRequest.checksUnavailable
-        } : undefined;
+        const value: PullRequestState = result.kind === 'ok' ? {
+            kind: 'ok',
+            pullRequest: {
+                number: result.pullRequest.number,
+                title: result.pullRequest.title,
+                state: result.pullRequest.state,
+                url: result.pullRequest.url,
+                headSha: result.pullRequest.headSha,
+                headRef: result.pullRequest.headRef,
+                baseRef: result.pullRequest.baseRef,
+                checks: result.pullRequest.checks,
+                checksUnavailable: result.pullRequest.checksUnavailable
+            }
+        } : { kind: 'unavailable', reason: result.reason };
         this.pullRequestCache = { key, at: now, value };
         return value;
+    }
+    clearPullRequestCache(): void { this.pullRequestCache = undefined; }
+    /** Explicit user action; never called during passive refresh. */
+    async connectGitHub(): Promise<boolean> {
+        const connected = await connectGitHubSession();
+        this.clearPullRequestCache();
+        return connected;
     }
     async snapshot(previewRef?: string): Promise<Snapshot | null> {
         const repo = this.repository;
