@@ -1,0 +1,191 @@
+/* Single-card task thread — replica of ref-fig/pitus-generative-ui-merge-conflicts.mp4.
+   Geometry measured from the video at 640px card width (video zoom ≈1.08–1.43×). */
+.gg-thread {
+  --ink: #1d1d1f; --ink-2: #3a3a3c; --muted: #7a7a7a; --faint: #a6a6a6; --hair: #ececec; --soft: #f5f5f5;
+  --blue: #4a7fdc; --blue-line: #c6d6f2; --blue-tag-bg: #eef4ff; --blue-tag: #3866c4;
+  --teal: #22c4a0; --teal-line: #bde9dc; --teal-tag-bg: #ecfaf5; --teal-tag: #16876c;
+  --base: #bdbdbd; --base-line: #dedede;
+  --warn: #e3a21a; --warn-ink: #b5682b; --warn-line: #ecc68a; --warn-bg: #fdf6e6;
+  --ok: #2fb46c; --ok-ink: #2e8f55; --ok-line: #a8e0c0;
+  --merged: #8b5cf6; --merged-ink: #7a45e0; --merged-line: #cfbdf8; --merged-bg: #f5f0ff;
+  --accent-bg: #eef2fd; --accent-ink: #3553b5; --send: #2e6ce7;
+  --add: #2f8a4f; --del: #c0394b; --add-block: #3fb950; --del-block: #e5534b;
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  --ui: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Noto Sans SC', sans-serif;
+  --mono: 'SFMono-Regular', 'JetBrains Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  width: min(640px, 100%); margin: 0 auto; padding: 24px 0 40px; color: var(--ink);
+  font: 13px/1.45 var(--ui); font-feature-settings: 'cv11', 'ss01'; -webkit-font-smoothing: antialiased;
+  display: flex; flex-direction: column;
+}
+.gg-thread * { box-sizing: border-box; }
+.gg-icon { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.gg-spinner { width: 12px; height: 12px; flex: none; border-radius: 50%; border: 1.5px solid #d4d4d4; border-top-color: #6b6b6b; animation: gg-spin .8s linear infinite; }
+
+/* Intent bubble + activity row */
+.gg-intent { align-self: flex-end; padding: 9px 16px; border-radius: 20px; background: var(--soft); font-size: 14px; color: var(--ink); box-shadow: 0 1px 2px #0000000a; margin-bottom: 16px; }
+.gg-activity { display: flex; align-items: center; gap: 6px; height: 22px; margin: 0 0 14px 4px; color: var(--muted); font-size: 13px; }
+.gg-activity .gg-icon { width: 12px; height: 12px; color: var(--faint); margin-right: 18px; }
+.gg-activity .gg-secs { color: var(--faint); display: inline-block; }
+.gg-shimmer { color: var(--ink-2); background: linear-gradient(90deg, var(--ink-2) 35%, #c4c4c4 50%, var(--ink-2) 65%) 0 0 / 300% 100%; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; animation: gg-shimmer 1.6s linear infinite; }
+
+/* Card */
+.gg-card { position: relative; border: 1px solid var(--hair); border-radius: 12px; background: #fff; box-shadow: 0 1px 2px #00000008; padding: 14px 16px 12px; }
+.gg-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 20px; margin-bottom: 9px; }
+.gg-head h2 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -.1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gg-pr { font-weight: 400; color: var(--muted); }
+.gg-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; white-space: nowrap; }
+.gg-status i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.gg-status.t-open { color: var(--ok-ink); }
+.gg-status.t-merged { color: var(--merged-ink); }
+
+/* Graph: rail (SVG) + absolutely positioned rows that slide on transform */
+.gg-graph { position: relative; transition: height .32s var(--ease); }
+.gg-rail { position: absolute; left: 0; top: 0; overflow: visible; transition: height .32s var(--ease); }
+.gg-rows { position: absolute; inset: 0; }
+.gg-row { position: absolute; left: 0; right: 0; top: 0; height: 30px; padding-left: 61px; display: flex; align-items: center; gap: 8px; white-space: nowrap; color: var(--muted); transition: transform .32s var(--ease), color .3s; }
+.gg-row::before { content: ''; position: absolute; inset: 2px -6px 2px 52px; border-radius: 6px; background: transparent; z-index: -1; }
+.gg-row.is-strong { color: var(--ink); }
+.gg-row.is-warn { color: var(--warn-ink); }
+.gg-title { overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
+.gg-tag { flex: none; padding: 1px 6px; border-radius: 4px; font: 11px/1.5 var(--mono); background: var(--soft); color: #707070; transition: background .3s, color .3s; }
+.gg-tag.t-ours { background: var(--blue-tag-bg); color: var(--blue-tag); }
+.gg-tag.t-other { background: var(--teal-tag-bg); color: var(--teal-tag); }
+.gg-tag.t-merged { background: var(--merged-bg); color: var(--merged-ink); }
+.gg-mark { flex: none; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; font-size: 10.5px; background: var(--warn-bg); color: var(--warn-ink); }
+.gg-mark.is-check { background: #eaf7ef; color: var(--ok); }
+.gg-mark .gg-icon { width: 10px; height: 10px; stroke-width: 2; }
+.gg-meta { margin-left: auto; padding-left: 12px; display: inline-flex; align-items: baseline; gap: 4px; color: var(--muted); font-size: 12.5px; }
+.gg-meta code { font: 11.5px var(--mono); color: var(--faint); margin-right: 3px; }
+.gg-dot-sep { color: var(--faint); }
+.gg-meta.t-warning { color: var(--warn-ink); }
+.gg-meta.t-success { color: var(--ok-ink); }
+.gg-meta.t-merged { color: var(--merged-ink); }
+.gg-progress { position: absolute; left: 61px; right: 0; bottom: 2px; height: 2px; }
+.gg-progress span { display: block; height: 100%; border-radius: 1px; background: var(--ok); transition: width .25s linear; }
+
+/* Rail strokes and glyphs */
+.gg-edge { fill: none; stroke-width: 1.5; stroke: var(--base-line); transition: d .32s var(--ease), stroke .3s; }
+.gg-edge.s-pending { stroke-dasharray: .018 .018; }
+.gg-edge.t-ours { stroke: var(--blue-line); } .gg-edge.t-other { stroke: var(--teal-line); }
+.gg-edge.t-warn { stroke: var(--warn-line); } .gg-edge.t-ok { stroke: var(--ok-line); } .gg-edge.t-merged { stroke: var(--merged-line); }
+.gg-node { --c: var(--base); transition: transform .32s var(--ease); }
+.gg-node.t-ours { --c: var(--blue); } .gg-node.t-other { --c: var(--teal); } .gg-node.t-warn { --c: var(--warn); }
+.gg-node.t-ok { --c: var(--ok); } .gg-node.t-merged { --c: var(--merged); }
+.gg-n-dot { fill: var(--c); transition: fill .3s; }
+.gg-n-ring { fill: #fff; stroke: var(--c); stroke-width: 1.6; }
+.gg-n-core { fill: none; stroke: var(--c); stroke-width: 1.4; }
+.gg-n-orbit { fill: none; stroke: var(--c); stroke-width: 1.4; stroke-dasharray: 24 11; transform-origin: 0 0; animation: gg-spin 1.1s linear infinite; }
+.gg-n-badge { fill: var(--c); transition: fill .3s; }
+.g-merged .gg-n-badge { r: 7; }
+.gg-n-mark { fill: none; stroke: #fff; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Checks row */
+.gg-checks { display: flex; gap: 6px; margin: 13px 0 0 -4px; flex-wrap: wrap; }
+.gg-check { position: relative; display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 10px 0 8px; border: 1px solid var(--hair); border-radius: 12px; font-size: 12.5px; color: var(--muted); outline: none; }
+.gg-check b { font-weight: 400; color: var(--ink); }
+.gg-check > .gg-icon { width: 11px; height: 11px; color: var(--ok); stroke-width: 2; }
+.gg-tip { position: absolute; left: 0; bottom: calc(100% + 6px); display: flex; gap: 10px; padding: 5px 9px; border: 1px solid var(--hair); border-radius: 7px; background: #fff; box-shadow: 0 4px 14px #00000014; color: var(--ink-2); font-size: 11.5px; white-space: nowrap; opacity: 0; transform: translateY(3px); pointer-events: none; transition: opacity .14s, transform .14s; z-index: 5; }
+.gg-tip em { font-style: normal; color: var(--faint); }
+.gg-check:hover .gg-tip, .gg-check:focus .gg-tip { opacity: 1; transform: none; transition-delay: .12s; }
+
+/* Footer */
+.gg-foot { display: flex; align-items: center; gap: 8px; min-height: 32px; margin-top: 11px; font-size: 13px; color: var(--ink); }
+.gg-foot-lead { display: inline-flex; width: 14px; justify-content: center; }
+.gg-foot-lead .is-warn { color: var(--warn-ink); } .gg-foot-lead .is-ok { color: var(--ok); stroke-width: 1.8; } .gg-foot-lead .is-merged { color: var(--merged-ink); }
+.gg-foot-text { flex: 1; min-width: 0; }
+.gg-foot-text.is-working { color: var(--ink-2); }
+.gg-trigger { position: relative; color: var(--warn-ink); text-decoration: underline dotted; text-underline-offset: 3px; cursor: default; outline: none; }
+.gg-action { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 14px; border: 0; border-radius: 15px; background: var(--accent-bg); color: var(--accent-ink); font: 500 13px var(--ui); cursor: pointer; transition: background .2s, color .2s; white-space: nowrap; }
+.gg-action.is-busy { background: var(--soft); color: var(--muted); cursor: default; }
+.gg-action.is-neutral { background: var(--soft); color: var(--ink); }
+
+/* Conflict popover (hover or focus on the trigger) */
+.gg-popover { position: absolute; left: -26px; bottom: calc(100% + 10px); width: 430px; padding: 10px 14px 6px; border: 1px solid var(--hair); border-radius: 12px; background: #fff; box-shadow: 0 10px 30px #0000001a; color: var(--muted); font-size: 12.5px; text-decoration: none; opacity: 0; transform: translateY(4px); pointer-events: none; transition: opacity .14s, transform .14s; z-index: 10; }
+.gg-trigger:hover .gg-popover, .gg-trigger:focus .gg-popover, .gg-trigger.is-open .gg-popover { opacity: 1; transform: none; pointer-events: auto; transition-delay: .12s; }
+.gg-pop-head { padding-bottom: 8px; border-bottom: 1px solid #f1f1f1; }
+.gg-pop-head b, .gg-pop-file b { color: var(--ink); font-weight: 500; }
+.gg-pop-group { padding: 8px 0 6px; border-bottom: 1px solid #f1f1f1; }
+.gg-pop-group:last-child { border-bottom: 0; }
+.gg-pop-file { margin-bottom: 4px; color: var(--faint); }
+.gg-pop-line { display: flex; gap: 12px; padding: 2px 0 2px 10px; border-left: 2px solid; white-space: nowrap; }
+.gg-pop-line span { width: 34px; flex: none; color: var(--muted); }
+.gg-pop-line code { font: 12px/1.6 var(--mono); color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; }
+.gg-pop-line.is-theirs { border-color: #f0b27a; } .gg-pop-line.is-ours { border-color: #9cbcf0; }
+
+/* Narration, chips, composer */
+.gg-narration { margin: 22px 0 0; font-size: 14.5px; line-height: 24px; color: var(--ink); }
+.gg-narration .w { display: inline; }
+.gg-narration code { font: 12.5px var(--mono); padding: 1px 5px; border-radius: 4px; background: var(--soft); }
+.gg-narration b { font-weight: 600; }
+.gg-chips { display: flex; gap: 6px; margin-top: 34px; min-height: 28px; }
+.gg-narration + .gg-chips { margin-top: 28px; }
+.gg-chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border: 1px solid var(--hair); border-radius: 14px; background: #fff; font: 12.5px var(--ui); color: var(--ink); white-space: nowrap; overflow: hidden; flex: none; }
+.gg-chip.is-suggestion { cursor: pointer; }
+.gg-chip.is-suggestion:hover { background: var(--soft); }
+.gg-chip b { font-weight: 400; }
+.gg-chip-lead { display: inline-flex; }
+.gg-chip-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.gg-chip-dot.s-conflicts { background: var(--warn); } .gg-chip-dot.s-ready { background: var(--ok); }
+.gg-chip.s-conflicts .gg-chip-state { color: var(--warn-ink); }
+.gg-chip.s-ready .gg-chip-state { color: var(--ok-ink); }
+.gg-chip.s-merged .gg-chip-state, .gg-chip .is-merged { color: var(--merged-ink); }
+.gg-chip.is-pr.s-creating, .gg-chip.is-pr.s-resolving, .gg-chip.is-pr.s-merging { color: var(--ink-2); }
+.gg-chip.is-diff .add { color: var(--add); } .gg-chip.is-diff .del { color: var(--del); }
+.gg-blocks { display: inline-flex; gap: 1.5px; margin-left: 2px; }
+.gg-blocks i { width: 7px; height: 7px; border-radius: 1.5px; background: #dcdcdc; }
+.gg-blocks .b-add { background: var(--add-block); } .gg-blocks .b-del { background: var(--del-block); }
+.gg-chip .gg-icon { color: var(--faint); width: 12px; height: 12px; }
+.gg-composer { margin-top: 8px; height: 118px; padding: 14px 12px 12px 16px; border: 1px solid var(--hair); border-radius: 14px; background: #fff; box-shadow: 0 1px 3px #0000000a; display: flex; flex-direction: column; justify-content: space-between; }
+.gg-input { font-size: 14.5px; color: var(--faint); }
+.gg-tools { display: flex; align-items: center; gap: 6px; margin-left: -4px; color: var(--ink-2); font-size: 13px; }
+.gg-round, .gg-mic { width: 30px; height: 30px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); }
+.gg-round { background: var(--soft); }
+.gg-pill { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: 15px; background: var(--soft); }
+.gg-seg { display: inline-flex; align-items: center; height: 30px; padding: 2px; border-radius: 15px; background: var(--soft); }
+.gg-seg-on { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 11px; border-radius: 13px; background: #fff; box-shadow: 0 1px 2px #00000014; }
+.gg-seg-off { display: inline-flex; padding: 0 9px; color: var(--muted); }
+.gg-spacer { flex: 1; }
+.gg-effort { display: inline-flex; align-items: flex-end; gap: 1.5px; color: var(--muted); margin-right: 6px; }
+.gg-effort i { width: 2.5px; border-radius: 1px; background: #cfcfcf; margin-bottom: 4px; }
+.gg-effort i:nth-child(1) { height: 4px; background: var(--ink-2); } .gg-effort i:nth-child(2) { height: 6px; background: var(--ink-2); }
+.gg-effort i:nth-child(3) { height: 8px; } .gg-effort i:nth-child(4) { height: 10px; margin-right: 6px; }
+.gg-send { width: 32px; height: 32px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: var(--send); color: #fff; }
+.gg-send .gg-icon { stroke-width: 1.8; }
+
+/* Motion: entrances (m-enter is added by motion.ts and removed after the animation) */
+.gg-thread > .m-enter:not(.gg-card):not(.gg-narration) { animation: gg-fade-up .22s var(--ease) both; }
+.gg-card.m-enter { animation: gg-card-grow .45s var(--ease) both; }
+.gg-card.m-enter .gg-row { animation: gg-rise .3s var(--ease) both; animation-delay: calc(var(--rev) * 45ms + 120ms); }
+.gg-card.m-enter .gg-glyph { animation: gg-pop .3s var(--ease) both; animation-delay: calc(120ms + 45ms * var(--rev, 0)); }
+.gg-card.m-enter .gg-edge { stroke-dasharray: 1; animation: gg-draw .7s var(--ease) both .1s; }
+.gg-card.m-enter .gg-foot, .gg-card.m-enter .gg-head { animation: gg-fade-up .3s var(--ease) both .45s; }
+.gg-row.m-enter { animation: gg-row-in .9s var(--ease) both; }
+.gg-row.m-enter::before { animation: gg-row-glow 1.3s ease-out both; }
+.gg-node.m-enter .gg-glyph { animation: gg-pop .3s var(--ease) both .2s; }
+.gg-edge.m-enter { stroke-dasharray: 1; animation: gg-draw .45s var(--ease) both .2s; }
+.gg-edge.s-pending.m-enter { animation: none; }
+.gg-checks.m-enter .gg-check { animation: gg-fade-up .26s var(--ease) both; animation-delay: calc(var(--i) * 90ms); }
+.gg-foot .m-enter, .gg-chip .m-enter, .gg-head .m-enter, .gg-row .m-enter { animation: gg-fade .22s var(--ease) both; }
+.gg-narration.m-enter .w { animation: gg-word .28s ease-out both; animation-delay: calc(var(--i) * 24ms); }
+.gg-glyph.m-enter { animation: gg-pop .32s cubic-bezier(.3, 1.6, .5, 1) both; }
+.gg-row.t-merged::before { animation: gg-sweep .9s ease-out both; animation-delay: calc(var(--row) * 45ms + 150ms); }
+
+@keyframes gg-spin { to { transform: rotate(360deg); } }
+@keyframes gg-shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@keyframes gg-fade { from { opacity: 0; } }
+@keyframes gg-fade-up { from { opacity: 0; transform: translateY(4px); } }
+@keyframes gg-rise { from { opacity: 0; translate: 0 5px; } }
+@keyframes gg-card-grow { from { opacity: 0; transform: translateY(8px) scale(.985); } }
+@keyframes gg-pop { from { opacity: 0; transform: scale(.4); } }
+@keyframes gg-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes gg-row-in { 0%, 25% { opacity: 0; } 60% { opacity: 1; } }
+@keyframes gg-row-glow { 0%, 25% { background: #fbf1e6; } 60% { background: #fbf1e6; } 100% { background: transparent; } }
+@keyframes gg-word { from { opacity: 0; filter: blur(2px); } }
+@keyframes gg-sweep { 0% { background: transparent; } 30% { background: var(--merged-bg); } 100% { background: transparent; } }
+
+/* Rows and nodes are positioned with inline `transform`; entrance keyframes use the
+   separate `translate` property or an inner .gg-glyph so they never fight the position. */
+.m-reduce .gg-thread *, .m-reduce.gg-thread * { animation: none !important; transition: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  .gg-thread * { animation: none !important; transition: none !important; }
+}

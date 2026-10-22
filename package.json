@@ -69,6 +69,7 @@
     "watch": "node esbuild.js --watch",
     "test": "npm run compile && node --test dist/test.js",
     "test:host": "npm run compile && node scripts/test-host.mjs",
+    "preview": "npm run compile && node scripts/preview.mjs",
     "vscode:prepublish": "npm run compile"
   },
   "devDependencies": {

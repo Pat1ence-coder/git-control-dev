@@ -7,3 +7,5 @@ esbuild.js
 **/*.map
 dist/test.js
 dist/host-test.js
+dist/preview.js
+media/thread.css
