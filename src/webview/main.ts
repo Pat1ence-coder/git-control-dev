@@ -13,6 +13,7 @@ const freshReview = (): ReviewState => ({ loading: false, draft: '', dirty: fals
 const drafts = new Map<string, string>();
 const app: {
     booted: boolean; snapshot: Snapshot | null; live: LiveState; pullRequestState?: PullRequestState;
+    nativeAction?: { kind: 'push' | 'pull'; ahead: number; behind: number };
     selectedPath?: string; notice?: { text: string; level: string };
     detailOpen: boolean; detail?: CommitDetail; detailHash?: string; detailLoading: boolean; detailError?: string;
     reviewOpen: boolean; review: ReviewState; requestId: number; conflictsOpen: boolean; peekOpen: boolean; branchPickerOpen: boolean;
@@ -21,7 +22,7 @@ const app: {
     detailOpen: false, detailLoading: false, reviewOpen: false, review: freshReview(), requestId: 0, conflictsOpen: false, peekOpen: false, branchPickerOpen: false
 };
 const root = document.getElementById('app')!;
-root.innerHTML = `<header id="toolbar"></header><main class="task-workspace"><div id="task-context"></div><article id="task-card" class="task-card" aria-label="Git 任务"><header id="task-heading"></header><div id="branch-popover"></div><div id="graph"></div><div id="pr-checks"></div><div id="task-notice"></div><section id="stage" aria-label="任务详情"></section><div id="task-controls" class="task-controls"></div></article><p id="task-explanation"></p><div id="task-meta"></div><section id="working-changes" aria-label="未暂存更改"></section><section id="quick-composer" class="quick-composer" aria-label="快速提交"><label class="sr-only" for="quick-message">提交说明</label><textarea id="quick-message" rows="1" maxlength="20000" placeholder="写提交说明，或直接审查暂存区…"></textarea><div class="quick-tools"><div id="quick-context" class="quick-context"></div><span class="quick-hint">本地操作，不自动推送</span>${button('quick-review', '审查并提交', 'primary')}</div></section></main><footer id="status-bar"></footer><div id="announcer" class="sr-only" aria-live="polite"></div>`;
+root.innerHTML = `<header id="toolbar"></header><main class="task-workspace"><div id="task-context"></div><article id="task-card" class="task-card" aria-label="Git 任务"><header id="task-heading"></header><div id="branch-popover"></div><div id="graph"></div><div id="pr-checks"></div><div id="task-notice"></div><section id="stage" aria-label="任务详情"></section><div id="task-controls" class="task-controls"></div></article><p id="task-explanation"></p><div id="task-meta"></div><section id="native-confirm" aria-label="原生远端操作确认"></section><section id="working-changes" aria-label="未暂存更改"></section><section id="quick-composer" class="quick-composer" aria-label="快速提交"><label class="sr-only" for="quick-message">提交说明</label><textarea id="quick-message" rows="1" maxlength="20000" placeholder="写提交说明，或直接审查暂存区…"></textarea><div class="quick-tools"><div id="quick-context" class="quick-context"></div><span class="quick-hint">本地操作，不自动推送</span>${button('quick-review', '审查并提交', 'primary')}</div></section></main><footer id="status-bar"></footer><div id="announcer" class="sr-only" aria-live="polite"></div>`;
 const htmlCache = new Map<string, string>();
 let lastPhase = '';
 const post = (message: ToHost) => { api?.postMessage(message); };
@@ -95,9 +96,15 @@ function render(): void {
     update('task-notice', app.notice ? `<div class="notice ${app.notice.level}" role="status">${esc(app.notice.text)}</div>` : '');
     update('task-explanation', esc(presentation.narrative));
     const chips = presentation.chips.map(chip => `<span class="meta-pill ${chip.tone}"><span class="meta-dot ${chip.tone}"></span>${esc(chip.label)}</span>`).join('');
+    const currentBranch = app.snapshot?.preview ? undefined : app.snapshot?.branchList?.find(branch => branch.current);
+    const ahead = currentBranch?.ahead ?? 0;
+    const behind = currentBranch?.behind ?? 0;
+    const remoteActions = ahead || behind
+        ? `<span class="remote-actions">${ahead ? button('native-push', `↑${ahead} Push`, 'remote-action') : ''}${behind ? button('native-pull', `↓${behind} Pull`, 'remote-action') : ''}</span>` : '';
     const patch = app.review.data?.patch;
     const stats = patch === undefined ? '' : `<span class="meta-pill" title="当前审查文件的增删行数"><span class="addition-text">+${patch.split('\n').filter(l => l.startsWith('+') && !l.startsWith('+++')).length}</span><span class="deletion-text">−${patch.split('\n').filter(l => l.startsWith('-') && !l.startsWith('---')).length}</span><span>当前文件</span></span>`;
-    update('task-meta', chips + stats);
+    update('task-meta', chips + remoteActions + stats);
+    update('native-confirm', app.nativeAction ? `<div class="native-confirm"><div><strong>${app.nativeAction.kind === 'push' ? 'Push' : 'Pull'} 由 VS Code 原生 Git 完成</strong><p>${app.nativeAction.kind === 'push' ? `当前分支领先上游 ${app.nativeAction.ahead} 个提交。` : `当前分支落后上游 ${app.nativeAction.behind} 个提交。`} 打开 Source Control 后由原生 Git 处理凭据、确认和传输。</p></div><div class="actions">${button('native-go', '打开 Source Control', 'primary')}${button('native-cancel', '取消', 'text-button')}</div></div>` : '');
     update('status-bar', `<span>Generative Git ${esc(version)}</span><span>本地操作，不自动推送</span>`);
     if (current !== lastPhase) {
         const card = document.getElementById('task-card')!;
@@ -174,11 +181,13 @@ function action(name: string, element: HTMLElement): void {
             const ref = element.dataset.ref;
             if (!ref) return;
             app.pullRequestState = undefined;
+            app.nativeAction = undefined;
             post({ type: 'preview-branch', ref });
             break;
         }
         case 'preview-current':
             app.pullRequestState = undefined;
+            app.nativeAction = undefined;
             post({ type: 'preview-current' });
             break;
         case 'collapse-task': closeDetail(); app.reviewOpen = false; app.review.loading = false; app.conflictsOpen = false; app.peekOpen = false; app.branchPickerOpen = false; render(); break;
@@ -211,6 +220,31 @@ function action(name: string, element: HTMLElement): void {
             app.live = { kind: 'resolving', path: '官方冲突处理' };
             post({ type: 'native-stage-conflicts' }); render(); break;
         case 'stage': { const f = selectedFile(); if (f) { app.live = { kind: 'resolving', path: f.path }; post({ type: 'stage', path: f.path }); render(); } break; }
+        case 'native-push': {
+            const branch = app.snapshot?.branchList?.find(b => b.current);
+            if (!branch?.ahead) return;
+            app.nativeAction = { kind: 'push', ahead: branch.ahead, behind: branch.behind ?? 0 };
+            render();
+            break;
+        }
+        case 'native-pull': {
+            const branch = app.snapshot?.branchList?.find(b => b.current);
+            if (!branch?.behind) return;
+            app.nativeAction = { kind: 'pull', ahead: branch.ahead ?? 0, behind: branch.behind };
+            render();
+            break;
+        }
+        case 'native-go':
+            if (!app.nativeAction) return;
+            app.nativeAction = undefined;
+            app.notice = { level: 'info', text: '已打开 Source Control；请在原生面板完成 Push/Pull。' };
+            post({ type: 'open-scm' });
+            render();
+            break;
+        case 'native-cancel':
+            app.nativeAction = undefined;
+            render();
+            break;
         case 'open-scm': case 'suggest-commit': case 'open-workbench': case 'connect-github': case 'refresh-github': case 'open-pull-request': post({ type: name }); break;
         case 'copy': void copyPrompt(); break;
         case 'inspect-commit': inspect(element.dataset.hash!); break;
@@ -243,6 +277,7 @@ root.addEventListener('change', event => {
         const quick = document.getElementById('quick-message') as HTMLTextAreaElement | null;
         if (quick) quick.value = '';
         app.pullRequestState = undefined;
+        app.nativeAction = undefined;
         closeDetail(); resetReview(); app.conflictsOpen = false; app.peekOpen = false; app.branchPickerOpen = false; app.selectedPath = undefined; app.notice = undefined; app.live = { kind: 'overview' };
         post({ type: 'select-repo', repoId: select.value }); render();
     }
@@ -274,10 +309,10 @@ window.addEventListener('keydown', event => {
 window.addEventListener('message', (event: MessageEvent<ToWebview>) => {
     const m = event.data;
     switch (m.type) {
-        case 'hydrate': app.booted = true; app.snapshot = m.snapshot; app.pullRequestState = undefined; if (m.notice) app.notice = { text: m.notice, level: 'info' }; break;
+        case 'hydrate': app.booted = true; app.snapshot = m.snapshot; app.pullRequestState = undefined; app.nativeAction = undefined; if (m.notice) app.notice = { text: m.notice, level: 'info' }; break;
         case 'snapshot': {
             const previous = app.snapshot; app.snapshot = m.snapshot;
-            if (previous?.repoId !== m.snapshot?.repoId || previous?.headName !== m.snapshot?.headName || previous?.headHash !== m.snapshot?.headHash || m.snapshot?.preview) app.pullRequestState = undefined;
+            if (previous?.repoId !== m.snapshot?.repoId || previous?.headName !== m.snapshot?.headName || previous?.headHash !== m.snapshot?.headHash || m.snapshot?.preview) { app.pullRequestState = undefined; app.nativeAction = undefined; }
             if (previous?.repoId !== m.snapshot?.repoId) { closeDetail(); resetReview(); app.conflictsOpen = false; app.peekOpen = false; app.branchPickerOpen = false; app.selectedPath = undefined; }
             if (app.reviewOpen && !app.review.committing && previous && (previous.headHash !== m.snapshot?.headHash || previous.stagedCount !== m.snapshot?.stagedCount)) app.review.error = '仓库状态已变化，请重新加载审查。';
             break;

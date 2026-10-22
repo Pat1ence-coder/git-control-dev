@@ -115,9 +115,6 @@ function chipsFor(s: Snapshot | null, pullRequest?: PullRequestInfo): TaskChip[]
     if (s.conflicts.length) chips.push({ label: `${s.conflicts.length} 冲突`, tone: 'conflict' });
     if (s.workingTreeCount) chips.push({ label: `${s.workingTreeCount} 未暂存`, tone: 'pending' });
     if (s.stagedCount) chips.push({ label: `${s.stagedCount} 已暂存`, tone: 'staged' });
-    const current = s.branchList?.find(branch => branch.current);
-    if (current?.ahead) chips.push({ label: `↑${current.ahead}`, tone: 'neutral' });
-    if (current?.behind) chips.push({ label: `↓${current.behind}`, tone: 'neutral' });
     if (s.preview) chips.push({ label: '只读', tone: 'neutral' });
     return chips;
 }

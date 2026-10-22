@@ -303,3 +303,18 @@ test('webview: unconnected GitHub offers an explicit connect action', () => {
     ui.click('connect-github');
     assert.equal(ui.posted.at(-1).type, 'connect-github');
 });
+test('webview: Push/Pull opens native Source Control and never calls git directly', () => {
+    const ui = harness();
+    const snapshot = makeSnapshot({
+        branchList: [{ name: 'main', ref: 'refs/heads/main', local: true, current: true, ahead: 2, behind: 1 }]
+    });
+    ui.message({ type: 'hydrate', snapshot });
+    assert.match(ui.get('task-meta').innerHTML, /native-push/);
+    assert.match(ui.get('task-meta').innerHTML, /native-pull/);
+    ui.click('native-push');
+    assert.match(ui.get('native-confirm').innerHTML, /Push 由 VS Code 原生 Git 完成/);
+    ui.click('native-go');
+    assert.equal(ui.posted.at(-1).type, 'open-scm');
+    assert.ok(!ui.posted.some((message: any) => /git\.push|push-force/.test(message.type)));
+    assert.equal(ui.get('native-confirm').innerHTML, '');
+});

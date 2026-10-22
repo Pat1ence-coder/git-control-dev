@@ -623,3 +623,17 @@ button.conflict-primary:hover:not(:disabled) { background: color-mix(in srgb, va
 .pr-number { color: var(--fg); font-weight: 500; }
 .pr-ref { color: var(--muted); font-family: var(--mono); font-size: 10px; }
 .pr-meta .text-button { padding: 2px 4px; font-size: 10px; }
+
+/* Explicit SCM handoff for remote actions; never calls git push/pull itself. */
+.remote-actions { display: inline-flex; align-items: center; gap: 5px; }
+button.remote-action { min-height: 24px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 12px; color: var(--muted); font-size: 10.5px; background: var(--card); }
+button.remote-action:hover:not(:disabled) { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 26%, var(--border)); background: var(--accent-soft); }
+#native-confirm:empty { display: none; }
+.native-confirm { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 12px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border)); border-radius: 12px; background: var(--accent-soft); }
+.native-confirm strong { display: block; color: var(--fg); font-size: 12px; font-weight: 500; }
+.native-confirm p { margin: 3px 0 0; color: var(--muted); font-size: 10.5px; line-height: 1.7; }
+.native-confirm .actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+@container (max-width: 480px) {
+  .native-confirm { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .native-confirm .actions { margin-left: auto; }
+}

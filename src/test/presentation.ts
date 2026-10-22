@@ -87,7 +87,7 @@ test('presentation: preview is read-only and carries no PR/CI fiction', () => {
     assert.ok(!/PR|CI|Merged/.test(p.title + p.narrative));
 });
 
-test('presentation: ahead/behind chips come from the current branch data', () => {
+test('presentation: ahead/behind do not duplicate as chips; they are actions', () => {
     const p = presentTask({
         phase: 'idle',
         snapshot: snapshot({
@@ -95,10 +95,7 @@ test('presentation: ahead/behind chips come from the current branch data', () =>
         }),
         live: overview
     });
-    assert.deepEqual(p.chips, [
-        { label: '↑2', tone: 'neutral' },
-        { label: '↓1', tone: 'neutral' }
-    ]);
+    assert.deepEqual(p.chips, []);
 });
 
 test('presentation: empty, loading and error states stay honest', () => {
