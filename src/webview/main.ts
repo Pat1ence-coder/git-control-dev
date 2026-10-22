@@ -1,8 +1,9 @@
 import type { ToHost, ToWebview, Snapshot, Strategy, CommitDetail } from '../shared/protocol';
 import { esc } from '../shared/html';
-import { button, icon, renderGraph, renderLiveStage, renderBranchPopover, livePhase, renderCommitDetail, renderReview, renderWorkingTree, type ReviewState, type LiveState } from './render';
+import { button, icon, renderGraph, renderLoadingGraph, renderLiveStage, renderBranchPopover, livePhase, renderCommitDetail, renderReview, renderWorkingTree, type ReviewState, type LiveState } from './render';
 import { version } from '../../package.json';
-import { renderTaskControls, taskTitle, taskStatus, taskExplanation, type TaskView } from './task';
+import { renderTaskControls, type TaskView } from './task';
+import { presentTask } from './presentation';
 
 declare function acquireVsCodeApi(): { postMessage(message: ToHost): void };
 let api: ReturnType<typeof acquireVsCodeApi> | undefined;
@@ -20,7 +21,7 @@ const app: {
     detailOpen: false, detailLoading: false, reviewOpen: false, review: freshReview(), requestId: 0, conflictsOpen: false, peekOpen: false, branchPickerOpen: false
 };
 const root = document.getElementById('app')!;
-root.innerHTML = `<header id="toolbar"></header><main class="task-workspace"><div id="task-context"></div><article id="task-card" class="task-card" aria-label="Git 任务"><header id="task-heading"></header><div id="branch-popover"></div><div id="graph"></div><div id="task-controls" class="task-controls"></div><section id="working-changes" aria-label="未暂存更改"></section><div id="task-notice"></div><section id="stage" aria-label="任务详情"></section></article><p id="task-explanation"></p><div id="task-meta"></div></main><footer id="status-bar"></footer><div id="announcer" class="sr-only" aria-live="polite"></div>`;
+root.innerHTML = `<header id="toolbar"></header><main class="task-workspace"><div id="task-context"></div><article id="task-card" class="task-card" aria-label="Git 任务"><header id="task-heading"></header><div id="branch-popover"></div><div id="graph"></div><div id="task-notice"></div><section id="stage" aria-label="任务详情"></section><div id="task-controls" class="task-controls"></div></article><p id="task-explanation"></p><div id="task-meta"></div><section id="working-changes" aria-label="未暂存更改"></section><section id="quick-composer" class="quick-composer" aria-label="快速提交"><label class="sr-only" for="quick-message">提交说明</label><textarea id="quick-message" rows="1" maxlength="20000" placeholder="写提交说明，或直接审查暂存区…"></textarea><div class="quick-tools"><div id="quick-context" class="quick-context"></div><span class="quick-hint">本地操作，不自动推送</span>${button('quick-review', '审查并提交', 'primary')}</div></section></main><footer id="status-bar"></footer><div id="announcer" class="sr-only" aria-live="polite"></div>`;
 const htmlCache = new Map<string, string>();
 let lastPhase = '';
 const post = (message: ToHost) => { api?.postMessage(message); };
@@ -57,13 +58,16 @@ function render(): void {
     const repoName = app.snapshot?.repoName || '未打开仓库';
     const head = app.snapshot?.headName || '—';
     const task: TaskView = { ...app, phase: current, busy: busy() };
-    const status = taskStatus(current);
+    const presentation = presentTask({ phase: current, snapshot: app.snapshot, live: app.live });
     update('toolbar', `<div class="brand">${icon('branch')}<strong>Generative Git</strong></div><div class="toolbar-controls">${button('refresh', icon('refresh'), 'icon-button', 'aria-label="刷新" title="刷新"')}${api ? button('open-workbench', icon('expand'), 'icon-button', 'aria-label="在编辑器中展开" title="在编辑器中展开"') : ''}</div>`);
     const branchTrigger = app.snapshot
         ? `<button class="branch-trigger${app.branchPickerOpen ? ' active' : ''}" type="button" data-action="choose-branch" aria-haspopup="dialog" aria-expanded="${app.branchPickerOpen}" title="浏览分支">${esc(head)}${icon('chevron')}</button>`
         : `<code>${esc(head)}</code>`;
     update('task-context', `<div class="breadcrumb">${icon('branch')}<span>${esc(repoName)}</span><span class="context-divider">/</span>${branchTrigger}${(app.snapshot?.repositories.length || 0) > 1 ? `<select data-action="select-repo" aria-label="切换仓库" ${disabled}>${app.snapshot!.repositories.map(r => `<option value="${esc(r.id)}" ${r.id === app.snapshot!.repoId ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select>` : ''}</div>`);
-    update('task-heading', `<h1>${esc(taskTitle(task))}</h1>`);
+    const quickVisible = !!app.snapshot && !app.reviewOpen && !app.detailOpen && !['confirm', 'abort-confirm', 'error'].includes(app.live.kind);
+    root.dataset.quick = quickVisible ? 'true' : 'false';
+    update('quick-context', app.snapshot ? `<span class="quick-chip">${icon('file')}${esc(repoName)}</span><span class="quick-chip">${icon('branch')}${esc(head)}</span>` : '');
+    update('task-heading', `<h1>${esc(presentation.title)}</h1><span class="task-state ${presentation.status.tone}"><i></i>${esc(presentation.status.label)}</span>`);
     update('branch-popover', app.branchPickerOpen && app.snapshot ? renderBranchPopover(app.snapshot) : '');
     const preview = app.snapshot?.preview;
     let graph = preview?.graph ?? app.snapshot?.graph;
@@ -76,9 +80,10 @@ function render(): void {
         graph = { ...graph, nodes: [{ id: 'working-tree', hash: `${app.snapshot.workingTreeCount + app.snapshot.stagedCount} 项`, title: '未提交的改动', lane: tip?.lane || 0, row: 0, badges: ['工作区'], role: 'ghost' }, ...graph.nodes.map(n => ({ ...n, row: n.row + 1 }))], edges: tip ? [{ id: 'working-tree-edge', from: 'working-tree', to: tip.id, style: 'pending' }, ...graph.edges] : graph.edges };
     }
     const graphBanner = preview ? `<div class="branch-preview" role="status"><span>${icon('branch')}只读预览 <strong>${esc(preview.name)}</strong><span>不会切换 HEAD</span></span>${button('preview-current', '返回当前分支', 'text-button')}</div>` : '';
-    update('graph', graphBanner + (graph ? renderGraph(graph, reduced, app.detailOpen ? app.detailHash : undefined) : '<div class="graph-empty">打开本地仓库后，这里会显示提交历史。</div>'));
-    update('task-controls', renderTaskControls(task));
-    update('working-changes', app.snapshot ? renderWorkingTree(app.snapshot, busy()) : '');
+    update('graph', graphBanner + (graph ? renderGraph(graph, reduced, app.detailOpen ? app.detailHash : undefined) : app.booted ? '<div class="graph-empty">打开本地仓库后，这里会显示提交历史。</div>' : renderLoadingGraph()));
+    update('task-controls', renderTaskControls(task, presentation.footText));
+    const hasWorking = !!app.snapshot && ((app.snapshot.workingTreeFiles?.length ?? 0) > 0 || app.snapshot.workingTreeCount > 0);
+    update('working-changes', hasWorking ? renderWorkingTree(app.snapshot!, busy()) : '');
     const expanded = app.detailOpen || app.reviewOpen || app.conflictsOpen || ['confirm', 'abort-confirm', 'error'].includes(app.live.kind);
     root.dataset.expanded = expanded ? 'true' : 'false';
     const body = !expanded ? ''
@@ -87,16 +92,20 @@ function render(): void {
         : renderLiveStage(app.snapshot, app.live, app.selectedPath);
     update('stage', body);
     update('task-notice', app.notice ? `<div class="notice ${app.notice.level}" role="status">${esc(app.notice.text)}</div>` : '');
-    const quietOverview = current === 'idle' && app.live.kind === 'overview' && !app.detailOpen && !app.reviewOpen && !app.conflictsOpen;
-    update('task-explanation', quietOverview ? '' : taskExplanation(task));
+    update('task-explanation', esc(presentation.narrative));
+    const chips = presentation.chips.map(chip => `<span class="meta-pill ${chip.tone}"><span class="meta-dot ${chip.tone}"></span>${esc(chip.label)}</span>`).join('');
     const patch = app.review.data?.patch;
     const stats = patch === undefined ? '' : `<span class="meta-pill" title="当前审查文件的增删行数"><span class="addition-text">+${patch.split('\n').filter(l => l.startsWith('+') && !l.startsWith('+++')).length}</span><span class="deletion-text">−${patch.split('\n').filter(l => l.startsWith('-') && !l.startsWith('---')).length}</span><span>当前文件</span></span>`;
-    update('task-meta', stats);
+    update('task-meta', chips + stats);
     update('status-bar', `<span>Generative Git ${esc(version)}</span><span>本地操作，不自动推送</span>`);
     if (current !== lastPhase) {
+        const card = document.getElementById('task-card')!;
+        card.classList.remove('is-entering'); void card.offsetWidth; card.classList.add('is-entering');
+        const graphEl = document.getElementById('graph')!;
+        graphEl.classList.remove('is-entering'); void graphEl.offsetWidth; graphEl.classList.add('is-entering');
         const stage = document.getElementById('stage')!;
         stage.classList.remove('is-entering'); void stage.offsetWidth; stage.classList.add('is-entering');
-        document.getElementById('announcer')!.textContent = status.label;
+        document.getElementById('announcer')!.textContent = presentation.status.label;
         lastPhase = current;
     }
 }
@@ -112,6 +121,13 @@ function resolveLive(strategy: Strategy): void {
     const file = selectedFile(); if (busy() || !file?.hunks.length || !app.conflictsOpen) return;
     app.peekOpen = false; app.conflictsOpen = false; app.live = { kind: 'resolving', path: file.path }; app.notice = undefined;
     post({ type: 'resolve', path: file.path, strategy }); render();
+}
+function quickReview(): void {
+    if (busy()) return;
+    const input = document.getElementById('quick-message') as HTMLTextAreaElement | null;
+    const text = (input?.value || '').trim();
+    if (text && app.snapshot) drafts.set(app.snapshot.repoId, text);
+    beginReview();
 }
 function beginReview(path?: string): void {
     if (busy()) return;
@@ -164,6 +180,7 @@ function action(name: string, element: HTMLElement): void {
             break;
         case 'collapse-task': closeDetail(); app.reviewOpen = false; app.review.loading = false; app.conflictsOpen = false; app.peekOpen = false; app.branchPickerOpen = false; render(); break;
         case 'review-staged': beginReview(); break;
+        case 'quick-review': quickReview(); break;
         case 'review-file': beginReview(element.dataset.path); break;
         case 'commit-staged': commitStaged(); break;
         case 'workflow-tab': closeDetail(); app.reviewOpen = false; app.live = { kind: 'overview' }; render(); break;
@@ -220,8 +237,17 @@ root.addEventListener('input', event => {
 root.addEventListener('change', event => {
     const select = event.target as HTMLSelectElement;
     if (select.dataset.action === 'select-repo' && !busy()) {
+        const quick = document.getElementById('quick-message') as HTMLTextAreaElement | null;
+        if (quick) quick.value = '';
         closeDetail(); resetReview(); app.conflictsOpen = false; app.peekOpen = false; app.branchPickerOpen = false; app.selectedPath = undefined; app.notice = undefined; app.live = { kind: 'overview' };
         post({ type: 'select-repo', repoId: select.value }); render();
+    }
+});
+root.addEventListener('keydown', event => {
+    const target = event.target as HTMLTextAreaElement;
+    if (target.id === 'quick-message' && event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        quickReview();
     }
 });
 window.addEventListener('keydown', event => {
@@ -272,6 +298,8 @@ window.addEventListener('message', (event: MessageEvent<ToWebview>) => {
             app.review.committing = false;
             if (m.ok) {
                 if (app.review.data) drafts.delete(app.review.data.repoId);
+                const quick = document.getElementById('quick-message') as HTMLTextAreaElement | null;
+                if (quick) quick.value = '';
                 resetReview(); app.notice = undefined; app.live = { kind: 'committed', hash: m.hash };
             } else app.review.error = m.error || '提交失败，请重新加载审查后重试。';
             break;

@@ -210,11 +210,12 @@ test('task card: conflict peek and Escape preserve the workflow until an explici
     assert.equal(ui.get('stage').innerHTML, '');
     ui.click('peek-conflicts');
     assert.match(ui.get('task-controls').innerHTML, /id="conflict-popover"/);
+    assert.match(ui.get('task-controls').innerHTML, /conflict-popover is-open/);
     assert.match(ui.get('task-controls').innerHTML, /src\/checkout.ts/);
-    assert.match(ui.get('task-controls').innerHTML, /双方修改了相同的代码/);
+    assert.match(ui.get('task-controls').innerHTML, /HEAD 与 feature 修改了相同的代码/);
     ui.key('Escape');
     assert.equal(ui.phase(), 'conflict');
-    assert.ok(!ui.get('task-controls').innerHTML.includes('id="conflict-popover"'));
+    assert.ok(!ui.get('task-controls').innerHTML.includes('is-open'));
     ui.click('show-conflicts');
     assert.equal(ui.get('app').dataset.expanded, 'true');
     assert.match(ui.get('stage').innerHTML, /hunk-context/);
@@ -253,4 +254,14 @@ test('empty repository offers Source Control instead of a demo entry', () => {
     assert.equal(ui.phase(), 'empty');
     assert.match(ui.get('task-controls').innerHTML, /打开 Source Control/);
     assert.ok(!ui.get('task-controls').innerHTML.includes('运行演示'));
+});
+test('quick composer hands its message to the real review flow', () => {
+    const ui = harness();
+    ui.message({ type: 'hydrate', snapshot: makeSnapshot({ stagedCount: 1 }) });
+    (ui.get('quick-message') as any).value = 'fix: quick composer';
+    ui.click('quick-review');
+    assert.equal(ui.posted.at(-1).type, 'review-staged');
+    assert.equal(ui.phase(), 'reviewing');
+    ui.message({ type: 'staged-review', requestId: ui.posted.at(-1).requestId, review: makeReview() });
+    assert.match(ui.get('stage').innerHTML, /fix: quick composer/);
 });
