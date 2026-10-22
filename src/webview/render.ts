@@ -76,6 +76,10 @@ export function icon(name: 'branch' | 'file' | 'arrow' | 'check' | 'expand' | 'r
     };
     return `<svg class="icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>`;
 }
+export function renderLoadingGraph(): string {
+    const row = (width: string) => `<div class="skeleton-row"><i></i><span class="skeleton-line ${width}"></span><em></em></div>`;
+    return `<div class="graph-skeleton" role="status" aria-label="正在读取仓库">${row('w58')}${row('w44')}${row('w66')}${row('w38')}<div class="skeleton-status">正在读取本地仓库…</div></div>`;
+}
 function title(label: string, heading: string, body = ''): string {
     return `<div class="section-heading"><div><div class="eyebrow">${label}</div><h2>${heading}</h2>${body ? `<p class="description">${body}</p>` : ''}</div></div>`;
 }

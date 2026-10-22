@@ -547,7 +547,19 @@ textarea { min-height: 76px; padding: 10px 12px; border-radius: 9px; font-size: 
 .task-card.is-entering { animation: card-in .32s cubic-bezier(.2,.8,.2,1); }
 #graph.is-entering .commit-row { animation: row-in .28s cubic-bezier(.2,.8,.2,1) both; animation-delay: calc(var(--row, 0) * 16ms); }
 .conflict-popover { width: 500px; max-height: min(200px, 36vh); animation: pop-in .14s ease-out; }
-@keyframes card-in { from { opacity: .6; transform: translateY(5px) scale(.995); filter: blur(1px); } to { opacity: 1; transform: none; filter: blur(0); } }
+.task-card { transform-origin: 50% 100%; }
+.quick-composer { padding: 14px 16px 13px; }
+.quick-composer textarea { min-height: 28px; height: 28px; }
+.quick-tools { margin-top: 10px; }
+.graph-skeleton { padding: 5px 0 3px; }
+.skeleton-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) 74px; align-items: center; gap: 10px; height: 30px; padding: 0 4px; }
+.skeleton-row i { width: 7px; height: 7px; border-radius: 50%; background: var(--border); margin-left: 14px; }
+.skeleton-line { display: block; height: 8px; border-radius: 4px; background: linear-gradient(90deg, #f1f2f4 25%, #fafafa 50%, #f1f2f4 75%); background-size: 200% 100%; animation: shimmer 1.3s linear infinite; }
+.skeleton-line.w58 { width: 58%; }.skeleton-line.w44 { width: 44%; }.skeleton-line.w66 { width: 66%; }.skeleton-line.w38 { width: 38%; }
+.skeleton-row em { justify-self: end; width: 62px; height: 8px; border-radius: 4px; background: #f3f4f6; }
+.skeleton-status { display: flex; align-items: center; gap: 7px; margin: 10px 0 3px; color: var(--muted); font-size: 10.5px; }
+@keyframes shimmer { to { background-position: -200% 0; } }
+@keyframes card-in { from { opacity: .5; transform: translateY(12px) scale(.99); filter: blur(1.5px); } to { opacity: 1; transform: none; filter: blur(0); } }
 @keyframes row-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 @keyframes composer-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 @keyframes pop-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }

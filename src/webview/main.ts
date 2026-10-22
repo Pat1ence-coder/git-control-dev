@@ -1,6 +1,6 @@
 import type { ToHost, ToWebview, Snapshot, Strategy, CommitDetail } from '../shared/protocol';
 import { esc } from '../shared/html';
-import { button, icon, renderGraph, renderLiveStage, renderBranchPopover, livePhase, renderCommitDetail, renderReview, renderWorkingTree, type ReviewState, type LiveState } from './render';
+import { button, icon, renderGraph, renderLoadingGraph, renderLiveStage, renderBranchPopover, livePhase, renderCommitDetail, renderReview, renderWorkingTree, type ReviewState, type LiveState } from './render';
 import { version } from '../../package.json';
 import { renderTaskControls, type TaskView } from './task';
 import { presentTask } from './presentation';
@@ -80,7 +80,7 @@ function render(): void {
         graph = { ...graph, nodes: [{ id: 'working-tree', hash: `${app.snapshot.workingTreeCount + app.snapshot.stagedCount} 项`, title: '未提交的改动', lane: tip?.lane || 0, row: 0, badges: ['工作区'], role: 'ghost' }, ...graph.nodes.map(n => ({ ...n, row: n.row + 1 }))], edges: tip ? [{ id: 'working-tree-edge', from: 'working-tree', to: tip.id, style: 'pending' }, ...graph.edges] : graph.edges };
     }
     const graphBanner = preview ? `<div class="branch-preview" role="status"><span>${icon('branch')}只读预览 <strong>${esc(preview.name)}</strong><span>不会切换 HEAD</span></span>${button('preview-current', '返回当前分支', 'text-button')}</div>` : '';
-    update('graph', graphBanner + (graph ? renderGraph(graph, reduced, app.detailOpen ? app.detailHash : undefined) : '<div class="graph-empty">打开本地仓库后，这里会显示提交历史。</div>'));
+    update('graph', graphBanner + (graph ? renderGraph(graph, reduced, app.detailOpen ? app.detailHash : undefined) : app.booted ? '<div class="graph-empty">打开本地仓库后，这里会显示提交历史。</div>' : renderLoadingGraph()));
     update('task-controls', renderTaskControls(task, presentation.footText));
     const hasWorking = !!app.snapshot && ((app.snapshot.workingTreeFiles?.length ?? 0) > 0 || app.snapshot.workingTreeCount > 0);
     update('working-changes', hasWorking ? renderWorkingTree(app.snapshot!, busy()) : '');
