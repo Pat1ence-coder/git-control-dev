@@ -570,3 +570,28 @@ textarea { min-height: 76px; padding: 10px 12px; border-radius: 9px; font-size: 
   .quick-composer .primary { margin-left: auto; }
   .quick-chip { font-size: 10px; }
 }
+
+/* Conflict preview parity: quiet hover card, branch labels, no red header. */
+.conflict-popover { opacity: 0; visibility: hidden; transform: translateY(4px); pointer-events: none; transition: opacity .14s ease, transform .14s ease, visibility .14s; animation: none; }
+.conflict-peek:hover .conflict-popover,
+.conflict-peek:focus-within .conflict-popover,
+.conflict-popover.is-open { opacity: 1; visibility: visible; transform: none; pointer-events: auto; }
+.popover-heading { padding: 12px 14px 6px; border-bottom: 0; background: transparent; color: var(--fg); font-size: 12.5px; font-weight: 500; }
+.popover-heading strong { font-weight: 500; }
+.peek-file { padding: 8px 14px 4px; }
+.peek-file > div:first-child { margin-bottom: 5px; font-size: 11.5px; }
+.peek-file > div:first-child > span { font-size: 10px; color: var(--muted); }
+.peek-file strong { font-weight: 500; }
+.peek-line { grid-template-columns: 62px minmax(0, 1fr); gap: 6px; padding: 3px 6px 3px 9px; margin: 2px 0; border-left: 2px solid var(--diff-del-edge); background: transparent; }
+.peek-line.incoming { border-color: var(--diff-add-edge); background: transparent; }
+.peek-line > span { font-size: 10.5px; font-weight: 500; color: var(--diff-del-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.peek-line.incoming > span { color: var(--diff-add-text); }
+.peek-line code { color: var(--fg); font-size: 11.5px; line-height: 1.6; }
+.popover-footer { padding: 7px 14px 10px; border-top: 0; }
+button.conflict-trigger { padding: 2px 0; border: 0; background: transparent; color: var(--conflict-strong); font-size: 12px; font-weight: 500; text-decoration: underline dotted; text-underline-offset: 3px; }
+button.conflict-trigger:hover:not(:disabled) { background: transparent; }
+.conflict-trigger .subtle { color: var(--muted); font-size: 10.5px; text-decoration: none; }
+button.conflict-primary { background: var(--accent-soft); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent); }
+button.conflict-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 12%, var(--card)); }
+
+.conflict-popover { border-color: var(--border); }
