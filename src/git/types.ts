@@ -43,6 +43,7 @@ export interface Repository {
     log(options?: {
         maxEntries?: number;
         refNames?: string[];
+        path?: string;
     }): Promise<Commit[]>;
     add(paths: string[]): Promise<void>;
     merge?(ref: string): Promise<void>;

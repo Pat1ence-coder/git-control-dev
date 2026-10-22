@@ -32,7 +32,7 @@ function relativeTime(value?: string): string {
 }
 export function renderGraph(graph: GraphModel, reduced: boolean, selected?: string): string {
     if (!graph.nodes.length) return '<div class="graph-empty">打开仓库后，这里会显示提交历史。</div>';
-    const rowH = 44, laneW = 22, left = 17;
+    const rowH = 30, laneW = 18, left = 14;
     const railWidth = left + Math.max(1, graph.laneCount) * laneW + 10;
     const height = (Math.max(...graph.nodes.map(n => n.row)) + 1) * rowH;
     const x = (lane: number) => left + lane * laneW;
@@ -56,7 +56,7 @@ export function renderGraph(graph: GraphModel, reduced: boolean, selected?: stri
     const rows = graph.nodes.map(n => {
         const clickable = n.role === 'commit' || n.role === 'merge';
         const content = `<span class="commit-subject" title="${esc(n.title)}">${esc(n.title)}</span>${n.badges.map(b => `<span class="branch-tag" title="${esc(b)}">${esc(clipChars(b, 32))}</span>`).join('')}<span class="commit-meta"><code>${esc(n.hash)}</code>${n.author ? `<span>${esc(clipChars(n.author, 18))}</span>` : ''}${n.authorDate ? `<time datetime="${esc(n.authorDate)}" title="${esc(n.authorDate)}">${relativeTime(n.authorDate)}</time>` : ''}</span>`;
-        const attrs = `class="commit-row lane-${n.lane % 6} ${n.role} ${selected === n.id ? 'selected' : ''}" style="grid-row:${n.row + 1}"`;
+        const attrs = `class="commit-row lane-${n.lane % 6} ${n.role} ${selected === n.id ? 'selected' : ''}" style="grid-row:${n.row + 1};--row:${n.row}"`;
         return clickable ? `<button type="button" ${attrs} data-action="inspect-commit" data-hash="${esc(n.id)}" aria-label="查看提交 ${esc(n.hash)} ${esc(n.title)}">${content}</button>` : `<div ${attrs}>${content}</div>`;
     }).join('');
     return `<div class="commit-tree" style="--rail-width:${railWidth}px;--tree-height:${height}px" role="group" aria-label="提交与分支图，点击提交查看变更"><svg class="tree-rail" width="${railWidth}" height="${height}" viewBox="0 0 ${railWidth} ${height}" aria-hidden="true">${paths}${dots}</svg><div class="commit-list">${rows}</div></div>`;

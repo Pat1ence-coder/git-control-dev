@@ -18,6 +18,7 @@ export class EventEmitter<T> {
     dispose(): void { this.callbacks.clear(); }
 }
 export const workspace = {
+    isTrusted: true,
     getConfiguration: (_section?: string) => ({ get: <T>(_key: string, fallback: T): T => fallback }),
     workspaceFolders: undefined as {
         uri: Uri;
@@ -64,7 +65,11 @@ export const commands = {
     getCommands: async (_filterInternal?: boolean) => ['git.commit', 'git.stageAllMerge', 'git.openChange', 'git.openMergeEditor'],
     executeCommand: async (_command: string, ..._args: unknown[]) => { }
 };
-export const env = { clipboard: { writeText: async (_text: string) => {} } };
+export const env = { clipboard: { writeText: async (_text: string) => {} }, openExternal: async (_uri: Uri) => true };
+export const authentication = {
+    getSession: async (_provider: string, _scopes: string[], _options: unknown): Promise<{ accessToken: string } | undefined> => undefined,
+    onDidChangeSessions: new EventEmitter<{ provider: { id: string } }>().event
+};
 export class Range {
     constructor(readonly start: unknown, readonly end: unknown) { }
 }

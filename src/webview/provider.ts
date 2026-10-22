@@ -3,15 +3,24 @@ import * as vscode from 'vscode';
 import { randomBytes } from 'node:crypto';
 import { GitService, describeGitError } from '../git/gitService';
 import { asHostMessage, type ToHost, type ToWebview } from '../shared/protocol';
+import { repositoryContext, sameContext, type RepositoryContext, type Snapshot, type PullRequestState } from '../shared/protocol';
+import { safePullRequestUrl } from '../git/github';
 export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     private view?: vscode.WebviewView | vscode.WebviewPanel;
     private panel?: vscode.WebviewPanel;
     private ready = false;
     private previewRef?: string;
+    private current?: RepositoryContext;
+    private remoteVersion = 0;
+    private remoteLink?: { context: RepositoryContext; url: string };
+    private connecting = false;
     private queue: Promise<void> = Promise.resolve();
     private readonly subscriptions: vscode.Disposable[] = [];
     constructor(private readonly context: vscode.ExtensionContext, private readonly git: GitService, private readonly operation = { busy: false }) {
-        this.subscriptions.push(git.onDidChange(() => this.enqueue(() => this.pushSnapshot(false))));
+        this.subscriptions.push(git.onDidChange(() => {
+            this.invalidateRemote();
+            void this.enqueue(() => this.pushSnapshot(false));
+        }));
     }
     resolveWebviewView(view: vscode.WebviewView): void {
         this.attach(view);
@@ -27,12 +36,16 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
     private attach(view: vscode.WebviewView | vscode.WebviewPanel): void {
         this.view = view;
         this.ready = false;
+        this.current = undefined;
+        this.invalidateRemote();
         view.webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'dist'), vscode.Uri.joinPath(this.context.extensionUri, 'media')] };
         view.webview.html = this.html(view.webview);
-        this.subscriptions.push(view.webview.onDidReceiveMessage(value => { const message = asHostMessage(value); if (message)
+        this.subscriptions.push(view.webview.onDidReceiveMessage(value => { if (this.view !== view) return; const message = asHostMessage(value); if (message)
             void this.onMessage(message).catch(e => this.notify(describeGitError(e), 'error')); }), view.onDidDispose(() => { if (this.view === view) {
             this.view = undefined;
             this.ready = false;
+            this.current = undefined;
+            this.invalidateRemote();
         } }));
     }
     private post(message: ToWebview): void { if (this.ready)
@@ -40,15 +53,46 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
     private notify(text: string, level: 'info' | 'error' = 'info'): void { this.post({ type: 'notice', level, text }); }
     private enqueue(action: () => Promise<void>): Promise<void> { return this.queue = this.queue.then(action).catch(e => { this.notify(describeGitError(e), 'error'); }); }
     private async hydrate(): Promise<void> {
+        const view = this.view;
         await this.git.whenReady();
         const snapshot = await this.git.snapshot(this.previewRef);
+        if (!view || view !== this.view) return;
         this.ready = true;
         this.post({ type: 'hydrate', snapshot, notice: this.git.startupProblem });
+        this.refreshRemote(snapshot);
     }
     private async pushSnapshot(_force: boolean): Promise<void> {
         if (!this.ready) return;
+        const view = this.view;
         const snapshot = await this.git.snapshot(this.previewRef);
+        if (!this.ready || view !== this.view) return;
         this.post({ type: 'snapshot', snapshot });
+        this.refreshRemote(snapshot);
+    }
+    private invalidateRemote(): void {
+        this.remoteVersion++;
+        this.remoteLink = undefined;
+        if (this.current) this.post({ type: 'pull-request', context: this.current });
+    }
+    private refreshRemote(snapshot: Snapshot | null): void {
+        this.invalidateRemote();
+        this.current = snapshot ? repositoryContext(snapshot) : undefined;
+        if (snapshot && !snapshot.preview && !this.previewRef) void this.loadRemote();
+    }
+    private async loadRemote(): Promise<void> {
+        const context = this.current;
+        const version = ++this.remoteVersion;
+        if (!context || !this.ready || this.previewRef) return;
+        this.remoteLink = undefined;
+        this.post({ type: 'pull-request', context });
+        let state: PullRequestState;
+        try { state = await this.git.pullRequest(context); }
+        catch { state = { kind: 'unavailable', reason: 'error' }; }
+        if (!state || version !== this.remoteVersion || !this.ready || !sameContext(this.current, context) ||
+            !this.git.matchesContext(context)) return;
+        if (state.kind === 'ok' && safePullRequestUrl(state.pullRequest.url))
+            this.remoteLink = { context, url: state.pullRequest.url };
+        this.post({ type: 'pull-request', context, state });
     }
     async refresh(): Promise<void> {
         await this.git.refresh();
@@ -90,24 +134,54 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
             return;
         }
         if (message.type === 'refresh') {
+            this.git.clearPullRequestCache();
+            this.invalidateRemote();
             await this.refresh();
             return;
         }
         if (message.type === 'preview-branch') {
+            this.invalidateRemote();
             this.previewRef = message.ref;
             await this.enqueue(() => this.pushSnapshot(true));
             return;
         }
         if (message.type === 'preview-current') {
+            this.invalidateRemote();
             this.previewRef = undefined;
             await this.enqueue(() => this.pushSnapshot(true));
             return;
         }
         switch (message.type) {
+            case 'connect-github':
+            case 'refresh-github':
+            case 'open-pull-request': {
+                if (!this.ready || this.previewRef || !sameContext(this.current, message.context) ||
+                    !this.git.matchesContext(message.context)) return;
+                if (message.type === 'open-pull-request') {
+                    const link = this.remoteLink;
+                    if (link && sameContext(link.context, message.context) && safePullRequestUrl(link.url))
+                        await vscode.env.openExternal(vscode.Uri.parse(link.url));
+                } else if (message.type === 'connect-github') {
+                    if (this.connecting) return;
+                    this.connecting = true;
+                    try {
+                        const connected = await this.git.connectGitHub(message.context);
+                        if (!sameContext(this.current, message.context) || !this.ready) return;
+                        if (!connected) this.notify('GitHub 连接未完成，可稍后重试。');
+                        await this.loadRemote();
+                    } finally { this.connecting = false; }
+                } else {
+                    this.git.clearPullRequestCache();
+                    await this.loadRemote();
+                }
+                return;
+            }
             case 'select-repo':
                 if (this.operation.busy)
                     throw new UserFacingError('Git 操作进行中，请稍候再切换仓库。');
                 this.previewRef = undefined;
+                this.invalidateRemote();
+                this.current = undefined;
                 await this.git.select(message.repoId);
                 break;
             case 'open-file':
@@ -191,5 +265,5 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
         const script = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview.js'));
         return `<!DOCTYPE html><html lang="zh-Hans"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${css}"><title>Generative Git</title></head><body><div id="app"></div><script nonce="${nonce}" src="${script}"></script></body></html>`;
     }
-    dispose(): void { this.subscriptions.forEach(d => d.dispose()); }
+    dispose(): void { this.ready = false; this.view = undefined; this.invalidateRemote(); this.current = undefined; this.subscriptions.forEach(d => d.dispose()); }
 }

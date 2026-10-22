@@ -41,6 +41,9 @@ export function harness() {
         phase: () => get('app').dataset.phase,
         click(action: string, data: Record<string, string> = {}) { const el = new Element(); el.dataset = { action, ...data }; get('app').listeners.get('click')!({ target: el }); },
         input(value: string) { const el = Object.assign(new Element(), { value, tagName: 'TEXTAREA' }); el.dataset.action = 'commit-message'; get('app').listeners.get('input')!({ target: el }); },
+        quickInput(value: string) { get('app').listeners.get('input')!({ target: { id: 'quick-message', value } }); },
+        quickKey(options: Record<string, unknown> = {}) { get('app').listeners.get('keydown')!({ target: { id: 'quick-message' }, key: 'Enter', preventDefault() {}, ...options }); },
+        selectRepo(value: string) { const el = new Select(); el.dataset.action = 'select-repo'; get('app').listeners.get('change')!({ target: Object.assign(el, { value }) }); },
         key(key: string) { win.listeners.get('keydown')!({ key, target: new Element(), preventDefault() { } }); },
         message(message: ToWebview) { win.listeners.get('message')!({ data: message }); }
     };
@@ -50,6 +53,89 @@ const fixtureGraph = (): Snapshot['graph'] => ({
     laneCount: 1,
     nodes: [{ id: 'a1f3c09', hash: 'a1f3c09', title: 'fix: 补上结算税率', lane: 0, row: 0, badges: ['main'], role: 'commit', tip: true }],
     edges: []
+});
+
+test('quick composer opens review only, ignores IME/repeat and preserves literal untrusted text', () => {
+    const ui = harness();
+    const s = makeSnapshot({ stagedCount: 1 });
+    ui.message({ type: 'hydrate', snapshot: s });
+    ui.quickInput('<img src=x onerror=alert(1)>; git push --force');
+    const before = ui.posted.length;
+    ui.quickKey({ isComposing: true }); ui.quickKey({ repeat: true }); ui.quickKey({ shiftKey: true });
+    assert.equal(ui.posted.length, before);
+    ui.quickKey(); ui.quickKey();
+    assert.equal(ui.posted.length, before + 1);
+    assert.equal(ui.posted.at(-1).type, 'review-staged');
+    ui.message({ type: 'staged-review', requestId: ui.posted.at(-1).requestId, review: makeReview() });
+    assert.match(ui.get('stage').innerHTML, /&lt;img src=x onerror=alert\(1\)&gt;/);
+    assert.equal(ui.posted.some(m => m.type === 'commit-staged'), false);
+});
+
+test('quick drafts are isolated by repository and branch, and repo switches block premature review', () => {
+    const ui = harness();
+    const s = makeSnapshot();
+    ui.message({ type: 'hydrate', snapshot: s }); ui.quickInput('main draft');
+    ui.message({ type: 'snapshot', snapshot: { ...s, headName: 'feature' } });
+    assert.equal((ui.get('quick-message') as any).value, '');
+    ui.quickInput('feature draft');
+    ui.selectRepo('/other');
+    const before = ui.posted.length;
+    ui.quickKey(); assert.equal(ui.posted.length, before);
+    ui.message({ type: 'snapshot', snapshot: { ...s, repoId: '/other' } });
+    assert.equal((ui.get('quick-message') as any).value, '');
+    ui.message({ type: 'snapshot', snapshot: s });
+    assert.equal((ui.get('quick-message') as any).value, 'main draft');
+});
+
+test('a review received for another repository or branch cannot be submitted', () => {
+    for (const review of [makeReview({ repoId: '/other' }), makeReview({ headName: 'other' })]) {
+        const ui = harness();
+        ui.message({ type: 'hydrate', snapshot: makeSnapshot({ stagedCount: 1 }) });
+        ui.quickKey();
+        ui.message({ type: 'staged-review', requestId: ui.posted.at(-1).requestId, review });
+        assert.match(ui.get('stage').innerHTML, /仓库或分支已变化/);
+        ui.click('commit-staged');
+        assert.ok(!ui.posted.some(m => m.type === 'commit-staged'));
+    }
+});
+
+test('remote state is escaped and tied to repository, branch and HEAD; preview hides it', () => {
+    const ui = harness();
+    const s = makeSnapshot();
+    ui.message({ type: 'hydrate', snapshot: s });
+    const state = { kind: 'ok' as const, pullRequest: { number: 12, title: '<script>attack</script>', state: 'open' as const,
+        url: 'https://github.com/acme/app/pull/12', headSha: 'b'.repeat(40), headRef: 'main', baseRef: 'base<&>',
+        checks: [{ name: '<img onerror=attack>', status: 'unknown' as const }] } };
+    const context = { repoId: s.repoId, headName: s.headName, headHash: s.headHash };
+    ui.message({ type: 'pull-request', context: { ...context, repoId: '/other' }, state });
+    assert.equal(ui.get('pr-checks').innerHTML, '');
+    ui.message({ type: 'pull-request', context, state });
+    assert.match(ui.get('task-heading').innerHTML, /&lt;script&gt;attack&lt;\/script&gt;/);
+    assert.match(ui.get('pr-checks').innerHTML, /&lt;img onerror=attack&gt;/);
+    assert.match(ui.get('pr-checks').innerHTML, /与本地 HEAD 不同/);
+    assert.ok(!ui.get('pr-checks').innerHTML.includes('pr-check success'));
+    ui.message({ type: 'snapshot', snapshot: { ...s, headHash: 'c'.repeat(40) } });
+    ui.message({ type: 'pull-request', context, state });
+    assert.equal(ui.get('pr-checks').innerHTML, '');
+    ui.message({ type: 'snapshot', snapshot: { ...s, preview: { name: 'other', ref: 'refs/heads/other', graph: fixtureGraph() } } });
+    ui.message({ type: 'pull-request', context, state });
+    assert.equal(ui.get('pr-checks').innerHTML, '');
+    assert.equal(ui.get('app').dataset.quick, 'false');
+});
+
+test('Push/Pull buttons only hand off to SCM after confirmation; stale confirmations do nothing', () => {
+    const ui = harness();
+    const s = makeSnapshot({ branchList: [{ name: 'main', ref: 'refs/heads/main', local: true, current: true, ahead: 2, behind: 1 }] });
+    ui.message({ type: 'hydrate', snapshot: s });
+    const before = ui.posted.length;
+    ui.click('native-push'); assert.equal(ui.posted.length, before);
+    assert.match(ui.get('native-confirm').innerHTML, /领先上游 2 个提交/);
+    ui.click('native-cancel'); ui.click('native-go'); assert.equal(ui.posted.length, before);
+    ui.click('native-pull'); ui.click('native-go'); assert.equal(ui.posted.at(-1).type, 'open-scm');
+    ui.click('native-push');
+    ui.message({ type: 'snapshot', snapshot: { ...s, headHash: 'c'.repeat(40) } });
+    const count = ui.posted.length; ui.click('native-go'); assert.equal(ui.posted.length, count);
+    assert.ok(!ui.posted.some(m => ['push', 'pull', 'sync'].includes(m.type)));
 });
 const makeSnapshot = (overrides: Partial<Snapshot> = {}): Snapshot => ({
     repoId: '/repo', repoName: 'repo', repositories: [{ id: '/repo', name: 'repo' }], headName: 'main', headHash: 'a1f3c09',

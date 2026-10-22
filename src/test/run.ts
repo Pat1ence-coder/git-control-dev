@@ -3,6 +3,9 @@ import './webview';
 import './provider';
 import './native-git';
 import './security';
+import './github';
+import './remote-provider';
+import './presentation';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -337,6 +340,23 @@ test('GitService: real conflicts, resolution/staging, history diff, abort and wo
         });
         await t.test('conflict detection and incoming writes to the actual Git index', async () => {
             assert.equal((await service.merge('feature')).conflict, true);
+            const log = repo.log;
+            const authorQueries: string[] = [];
+            const head = git('rev-parse', 'HEAD'), incoming = git('rev-parse', 'MERGE_HEAD');
+            repo.log = async options => {
+                if (!options?.path) return log.call(repo, options);
+                assert.equal(options.path, path.join(dir, 'file.ts'));
+                assert.equal(options.maxEntries, 1);
+                assert.ok(options.refNames?.[0] === head || options.refNames?.[0] === incoming);
+                authorQueries.push(options.refNames![0]);
+                return [{ ...commit(options.refNames![0]), authorName: options.refNames![0] === head ? 'Current Author' : 'Incoming Author' }];
+            };
+            try {
+                const authors = (await service.snapshot())?.conflicts[0].hunks[0];
+                assert.equal(authors?.currentAuthor, 'Current Author');
+                assert.equal(authors?.incomingAuthor, 'Incoming Author');
+                assert.deepEqual(authorQueries.sort(), [head, incoming].sort());
+            } finally { repo.log = log; }
             const snapshot = await service.snapshot();
             assert.equal(snapshot?.conflicts.length, 1);
             assert.equal(snapshot?.workingTreeCount, 0, 'conflicts have their own list');
@@ -713,8 +733,8 @@ test('merge graph draws pending and join edges from parent tips toward the resul
         ]
     };
     const html = renderGraph(graph, false);
-    assert.match(html, /class="edge lane-1 pending" d="M39 66C39 44,17 44,17 22"/);
-    assert.match(html, /class="edge lane-0 join" d="M17 110L17 22"/);
+    assert.match(html, /class="edge lane-1 pending" d="M32 45C32 30,14 30,14 15"/);
+    assert.match(html, /class="edge lane-0 join" d="M14 75L14 15"/);
     assert.equal(graph.edges[0].from, 'merge');
     assert.equal(graph.nodes[0].row, 0);
     const reduced = renderGraph(graph, true);

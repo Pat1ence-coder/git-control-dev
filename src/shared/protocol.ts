@@ -7,6 +7,9 @@ export interface Hunk {
     incoming: string;
     currentLabel: string;
     incomingLabel: string;
+    /** Latest file commit author on each side; this is not line-level blame. */
+    currentAuthor?: string;
+    incomingAuthor?: string;
     currentStart?: number;
     incomingStart?: number;
     before?: string[];
@@ -59,6 +62,32 @@ export interface Snapshot {
     branchList?: BranchInfo[];
     preview?: BranchPreview;
 }
+export interface PullRequestCheck {
+    name: string;
+    status: 'queued' | 'in_progress' | 'completed' | 'unknown';
+    conclusion?: string;
+}
+export interface PullRequestInfo {
+    number: number;
+    title: string;
+    state: 'open' | 'closed' | 'merged';
+    url: string;
+    headSha: string;
+    headRef: string;
+    baseRef: string;
+    checks: PullRequestCheck[];
+    checksUnavailable?: boolean;
+    checksPartial?: boolean;
+}
+export type PullRequestState =
+    | { kind: 'ok'; pullRequest: PullRequestInfo }
+    | { kind: 'unavailable'; reason: 'no-auth' | 'not-github' | 'no-pr' | 'rate-limited' | 'error' };
+/** Binds delayed remote results/actions to the exact local view. */
+export interface RepositoryContext {
+    repoId: string;
+    headName: string;
+    headHash?: string;
+}
 export interface CommitDetail {
     hash: string;
     message: string;
@@ -89,6 +118,9 @@ export interface StagedReview {
 }
 export type ToHost = {
     type: 'ready' | 'refresh' | 'abort-merge' | 'suggest-commit' | 'open-scm' | 'open-workbench' | 'native-stage-conflicts' | 'preview-current';
+} | {
+    type: 'connect-github' | 'refresh-github' | 'open-pull-request';
+    context: RepositoryContext;
 } | {
     type: 'select-repo';
     repoId: string;
@@ -127,7 +159,7 @@ export type ToHost = {
     token: string;
     message: string;
 };
-export type ToWebview = {
+export type ToWebview = PullRequestMessage | {
     type: 'hydrate';
     snapshot: Snapshot | null;
     notice?: string;
@@ -158,12 +190,37 @@ export type ToWebview = {
     hash?: string;
     error?: string;
 };
+export type PullRequestMessage = {
+    type: 'pull-request';
+    context: RepositoryContext;
+    state?: PullRequestState;
+};
+export function repositoryContext(s: RepositoryContext): RepositoryContext {
+    return { repoId: s.repoId, headName: s.headName, headHash: s.headHash };
+}
+export function sameContext(a?: RepositoryContext | null, b?: RepositoryContext | null): boolean {
+    return !!a && !!b && a.repoId === b.repoId && a.headName === b.headName && a.headHash === b.headHash;
+}
+function parseContext(value: unknown): RepositoryContext | undefined {
+    if (!value || typeof value !== 'object') return;
+    const v = value as Record<string, unknown>;
+    if (typeof v.repoId !== 'string' || !v.repoId || v.repoId.length > 4096 || v.repoId.includes('\0') ||
+        typeof v.headName !== 'string' || !v.headName || v.headName.length > 1024 ||
+        (v.headHash !== undefined && (typeof v.headHash !== 'string' || !/^[a-f0-9]{7,64}$/i.test(v.headHash)))) return;
+    return { repoId: v.repoId, headName: v.headName, headHash: v.headHash as string | undefined };
+}
 export function asHostMessage(value: unknown): ToHost | undefined {
     if (!value || typeof value !== 'object')
         return;
     const m = value as Record<string, unknown>;
     const str = (key: string, max = 4096) => typeof m[key] === 'string' && (m[key] as string).length > 0 && (m[key] as string).length <= max;
     switch (m.type) {
+        case 'connect-github':
+        case 'refresh-github':
+        case 'open-pull-request': {
+            const context = parseContext(m.context);
+            return context ? { type: m.type, context } : undefined;
+        }
         case 'ready':
         case 'refresh':
         case 'abort-merge':
@@ -185,7 +242,7 @@ export function asHostMessage(value: unknown): ToHost | undefined {
                 return m as unknown as ToHost;
             break;
         case 'resolve':
-            if (str('path') && ['current', 'incoming', 'both', 'ai'].includes(String(m.strategy)))
+            if (str('path') && typeof m.strategy === 'string' && ['current', 'incoming', 'both', 'ai'].includes(m.strategy))
                 return m as unknown as ToHost;
             break;
         case 'stage':

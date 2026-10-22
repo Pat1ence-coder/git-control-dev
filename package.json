@@ -2,7 +2,7 @@
   "name": "generative-git",
   "displayName": "Generative Git",
   "description": "查看 Git 提交历史、管理未暂存更改、解决合并冲突并审查提交",
-  "version": "0.6.4",
+  "version": "0.7.0",
   "publisher": "generative-git-local",
   "engines": {
     "vscode": "^1.85.0"
@@ -69,7 +69,8 @@
     "watch": "node esbuild.js --watch",
     "test": "npm run compile && node --test dist/test.js",
     "test:host": "npm run compile && node scripts/test-host.mjs",
-    "vscode:prepublish": "npm run compile"
+    "vscode:prepublish": "npm run compile",
+    "test:ui": "npm run compile && node scripts/test-thread-ui.mjs"
   },
   "devDependencies": {
     "@types/node": "^18.19.0",

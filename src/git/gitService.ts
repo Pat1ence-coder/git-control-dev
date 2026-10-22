@@ -12,6 +12,8 @@ import { statusLabel } from './status';
 import { ResolutionSafety } from './safety';
 import { nativeCommit, requireNativeCommand } from './nativeGit';
 import { GitMetadata } from './metadata';
+import { GitHubReader, connectGitHub } from './github';
+import { sameContext, type RepositoryContext, type PullRequestState } from '../shared/protocol';
 import { describeGitError, UserFacingError } from './errors';
 export { describeGitError } from './errors';
 export const MAX_FILE_BYTES = 180000;
@@ -26,9 +28,47 @@ export class GitService implements vscode.Disposable {
     private ready: Promise<void> = Promise.resolve();
     private readonly reviewTokens = new Map<string, string>();
     private readonly metadata = new GitMetadata();
+    private readonly github = new GitHubReader();
     startupProblem?: string;
     constructor(private readonly state: vscode.Memento, private readonly output: vscode.OutputChannel,
-        private readonly safety: ResolutionSafety) { this.selected = state.get<string>('repo'); }
+        private readonly safety: ResolutionSafety) {
+        this.selected = state.get<string>('repo');
+        this.subscriptions.push(vscode.authentication.onDidChangeSessions(event => {
+            if (event.provider.id === 'github') { this.github.clear(); this.changed.fire(); }
+        }));
+    }
+    matchesContext(context: RepositoryContext): boolean {
+        const repo = this.repository;
+        return !!repo && sameContext(context, {
+            repoId: repo.rootUri.fsPath, headName: repo.state.HEAD?.name || 'HEAD', headHash: repo.state.HEAD?.commit
+        });
+    }
+    async pullRequest(context: RepositoryContext): Promise<PullRequestState> {
+        if (!vscode.workspace.isTrusted || !this.matchesContext(context)) return { kind: 'unavailable', reason: 'error' };
+        const repo = this.repository!;
+        if (!repo.state.HEAD?.name) return { kind: 'unavailable', reason: 'no-pr' };
+        let remote: string;
+        try { remote = await repo.getConfig('remote.origin.url'); }
+        catch { return { kind: 'unavailable', reason: 'not-github' }; }
+        if (!this.matchesContext(context)) return { kind: 'unavailable', reason: 'error' };
+        const result = await this.github.read(remote, context.headName);
+        return this.matchesContext(context) ? result : { kind: 'unavailable', reason: 'error' };
+    }
+    clearPullRequestCache(): void { this.github.clear(); }
+    async connectGitHub(context: RepositoryContext): Promise<boolean> {
+        if (!vscode.workspace.isTrusted || !this.matchesContext(context)) return false;
+        const connected = await connectGitHub();
+        this.github.clear();
+        return connected;
+    }
+    private async fileAuthor(repo: Repository, hash: string | undefined, relative: string): Promise<string | undefined> {
+        // Never interpret MERGE_MSG or conflict marker labels as Git arguments.
+        if (!hash || !/^[a-f\d]{40}(?:[a-f\d]{24})?$/i.test(hash)) return;
+        try {
+            const commits = await repo.log({ maxEntries: 1, refNames: [hash], path: resolveInside(repo.rootUri.fsPath, relative) });
+            return commits[0]?.authorName?.trim().slice(0, 200) || undefined;
+        } catch { return; }
+    }
     private assertSaved(repo: Repository, file?: vscode.Uri): void {
         const dirty = vscode.workspace.textDocuments.find(doc => doc.isDirty && (file
             ? samePath(doc.uri.fsPath, file.fsPath)
@@ -273,7 +313,10 @@ export class GitService implements vscode.Disposable {
                 commits = await repo.log({ maxEntries: 36 });
             }
             catch { /* unborn repository */ }
-        const conflicts: ConflictFile[] = await Promise.all(repo.state.mergeChanges.map(async (change) => {
+        const [mergeHash, mergeMessage] = await Promise.all([this.gitFile(repo, 'MERGE_HEAD'), this.gitFile(repo, 'MERGE_MSG')]);
+        const incomingHash = mergeHash.trim();
+        const currentHash = repo.state.HEAD?.commit;
+        const conflicts: ConflictFile[] = await Promise.all(repo.state.mergeChanges.map(async (change, index) => {
             const relative = path.relative(repo.rootUri.fsPath, change.uri.fsPath);
             const file: ConflictFile = { path: relative, status: statusLabel(change.status), hunks: [] };
             if (![16, 18].includes(change.status)) {
@@ -286,6 +329,12 @@ export class GitService implements vscode.Disposable {
                 const text = await this.readDocument(uri);
                 file.hunks = parseConflict(text).map(h => { const truncate = (s: string) => { const lines = s.split('\n'); if (lines.length > 80)
                     file.truncated = true; return lines.slice(0, 80).join('\n'); }; return { ...h, current: truncate(h.current), incoming: truncate(h.incoming) }; });
+                if (file.hunks.length && index < 3) {
+                    const [currentAuthor, incomingAuthor] = await Promise.all([
+                        this.fileAuthor(repo, currentHash, relative), this.fileAuthor(repo, incomingHash, relative)
+                    ]);
+                    file.hunks = file.hunks.map(h => ({ ...h, currentAuthor, incomingAuthor }));
+                }
                 if (!file.hunks.length)
                     file.note = '没有标准冲突块。请在编辑器检查内容，再暂存当前文件。';
             }
@@ -295,7 +344,6 @@ export class GitService implements vscode.Disposable {
             }
             return file;
         }));
-        const [mergeHash, mergeMessage] = await Promise.all([this.gitFile(repo, 'MERGE_HEAD'), this.gitFile(repo, 'MERGE_MSG')]);
         const previewBranch = previewRef ? branchList.find(branch => branch.ref === previewRef) : undefined;
         const preview = previewBranch && !previewBranch.current ? await this.branchPreview(repo, previewBranch, branchList) : undefined;
         let graph = layoutCommits(commits.map(c => ({ ...c, badges: branches.filter(r => r.commit === c.hash).map(r => r.name!) })), repo.state.HEAD?.commit);
@@ -584,6 +632,6 @@ export class GitService implements vscode.Disposable {
         }
         return { hash: commit.hash, message: commit.message, parent, author: commit.authorName, date: commit.authorDate?.toISOString(), files, path: selected, patch: patch?.slice(0, MAX_FILE_BYTES), truncated: (patch?.length || 0) > MAX_FILE_BYTES, note: commit.parents.length > 1 ? '合并提交：显示相对第一父提交的变更。' : undefined };
     }
-    dispose(): void { clearTimeout(this.timer); for (const d of [...this.subscriptions, ...this.repositories.values()])
+    dispose(): void { this.github.dispose(); clearTimeout(this.timer); for (const d of [...this.subscriptions, ...this.repositories.values()])
         d.dispose(); this.changed.dispose(); }
 }
