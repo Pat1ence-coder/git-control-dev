@@ -3,6 +3,7 @@ import './webview';
 import './provider';
 import './native-git';
 import './security';
+import './presentation';
 import './fixtures';
 import './thread';
 import { test } from 'node:test';

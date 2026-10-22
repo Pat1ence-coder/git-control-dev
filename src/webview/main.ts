@@ -2,7 +2,8 @@ import type { ToHost, ToWebview, Snapshot, Strategy, CommitDetail } from '../sha
 import { esc } from '../shared/html';
 import { button, icon, renderGraph, renderLiveStage, renderBranchPopover, livePhase, renderCommitDetail, renderReview, renderWorkingTree, type ReviewState, type LiveState } from './render';
 import { version } from '../../package.json';
-import { renderTaskControls, taskTitle, taskStatus, taskExplanation, type TaskView } from './task';
+import { renderTaskControls, type TaskView } from './task';
+import { presentTask } from './presentation';
 
 declare function acquireVsCodeApi(): { postMessage(message: ToHost): void };
 let api: ReturnType<typeof acquireVsCodeApi> | undefined;
@@ -57,13 +58,13 @@ function render(): void {
     const repoName = app.snapshot?.repoName || '未打开仓库';
     const head = app.snapshot?.headName || '—';
     const task: TaskView = { ...app, phase: current, busy: busy() };
-    const status = taskStatus(current);
+    const presentation = presentTask({ phase: current, snapshot: app.snapshot, live: app.live });
     update('toolbar', `<div class="brand">${icon('branch')}<strong>Generative Git</strong></div><div class="toolbar-controls">${button('refresh', icon('refresh'), 'icon-button', 'aria-label="刷新" title="刷新"')}${api ? button('open-workbench', icon('expand'), 'icon-button', 'aria-label="在编辑器中展开" title="在编辑器中展开"') : ''}</div>`);
     const branchTrigger = app.snapshot
         ? `<button class="branch-trigger${app.branchPickerOpen ? ' active' : ''}" type="button" data-action="choose-branch" aria-haspopup="dialog" aria-expanded="${app.branchPickerOpen}" title="浏览分支">${esc(head)}${icon('chevron')}</button>`
         : `<code>${esc(head)}</code>`;
     update('task-context', `<div class="breadcrumb">${icon('branch')}<span>${esc(repoName)}</span><span class="context-divider">/</span>${branchTrigger}${(app.snapshot?.repositories.length || 0) > 1 ? `<select data-action="select-repo" aria-label="切换仓库" ${disabled}>${app.snapshot!.repositories.map(r => `<option value="${esc(r.id)}" ${r.id === app.snapshot!.repoId ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select>` : ''}</div>`);
-    update('task-heading', `<h1>${esc(taskTitle(task))}</h1><span class="task-state ${status.tone}"><i></i>${esc(status.label)}</span>`);
+    update('task-heading', `<h1>${esc(presentation.title)}</h1><span class="task-state ${presentation.status.tone}"><i></i>${esc(presentation.status.label)}</span>`);
     update('branch-popover', app.branchPickerOpen && app.snapshot ? renderBranchPopover(app.snapshot) : '');
     const preview = app.snapshot?.preview;
     let graph = preview?.graph ?? app.snapshot?.graph;
@@ -77,7 +78,7 @@ function render(): void {
     }
     const graphBanner = preview ? `<div class="branch-preview" role="status"><span>${icon('branch')}只读预览 <strong>${esc(preview.name)}</strong><span>不会切换 HEAD</span></span>${button('preview-current', '返回当前分支', 'text-button')}</div>` : '';
     update('graph', graphBanner + (graph ? renderGraph(graph, reduced, app.detailOpen ? app.detailHash : undefined) : '<div class="graph-empty">打开本地仓库后，这里会显示提交历史。</div>'));
-    update('task-controls', renderTaskControls(task));
+    update('task-controls', renderTaskControls(task, presentation.footText));
     update('working-changes', app.snapshot ? renderWorkingTree(app.snapshot, busy()) : '');
     const expanded = app.detailOpen || app.reviewOpen || app.conflictsOpen || ['confirm', 'abort-confirm', 'error'].includes(app.live.kind);
     root.dataset.expanded = expanded ? 'true' : 'false';
@@ -87,21 +88,16 @@ function render(): void {
         : renderLiveStage(app.snapshot, app.live, app.selectedPath);
     update('stage', body);
     update('task-notice', app.notice ? `<div class="notice ${app.notice.level}" role="status">${esc(app.notice.text)}</div>` : '');
-    update('task-explanation', taskExplanation(task));
-    const snap = app.snapshot;
-    const countPills = snap ? [
-        snap.workingTreeCount ? `<span class="meta-pill"><span class="meta-dot pending"></span>${snap.workingTreeCount} 未暂存</span>` : '',
-        snap.stagedCount ? `<span class="meta-pill"><span class="meta-dot staged"></span>${snap.stagedCount} 已暂存</span>` : '',
-        snap.conflicts.length ? `<span class="meta-pill conflict"><span class="meta-dot conflict"></span>${snap.conflicts.length} 冲突</span>` : ''
-    ].join('') : '';
+    update('task-explanation', esc(presentation.narrative));
+    const chips = presentation.chips.map(chip => `<span class="meta-pill ${chip.tone}"><span class="meta-dot ${chip.tone}"></span>${esc(chip.label)}</span>`).join('');
     const patch = app.review.data?.patch;
     const stats = patch === undefined ? '' : `<span class="meta-pill" title="当前审查文件的增删行数"><span class="addition-text">+${patch.split('\n').filter(l => l.startsWith('+') && !l.startsWith('+++')).length}</span><span class="deletion-text">−${patch.split('\n').filter(l => l.startsWith('-') && !l.startsWith('---')).length}</span><span>当前文件</span></span>`;
-    update('task-meta', countPills + stats);
+    update('task-meta', chips + stats);
     update('status-bar', `<span>Generative Git ${esc(version)}</span><span>本地操作，不自动推送</span>`);
     if (current !== lastPhase) {
         const stage = document.getElementById('stage')!;
         stage.classList.remove('is-entering'); void stage.offsetWidth; stage.classList.add('is-entering');
-        document.getElementById('announcer')!.textContent = status.label;
+        document.getElementById('announcer')!.textContent = presentation.status.label;
         lastPhase = current;
     }
 }

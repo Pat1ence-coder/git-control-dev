@@ -464,6 +464,10 @@ body { background: #fff; font: 13px/1.6 var(--ui); }
 .meta-dot.pending { background: var(--accent); }
 .meta-dot.staged { background: var(--success); }
 .meta-dot.conflict { background: var(--warning); }
+.meta-dot.neutral { background: var(--muted); }
+.meta-pill.pending { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 24%, var(--border)); }
+.meta-pill.staged { color: var(--success); border-color: color-mix(in srgb, var(--success) 24%, var(--border)); }
+.meta-pill.neutral { color: var(--muted); }
 .meta-pill.conflict { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 30%, var(--border)); }
 #status-bar { width: min(720px, 100%); padding: 12px 20px 18px; font-size: 9.5px; }
 button { gap: 6px; padding: 5px 10px; border-radius: 6px; font-size: 11.5px; }
