@@ -1,11 +1,11 @@
-import type { ToHost, ToWebview, Snapshot, Strategy, CommitDetail, PullRequestState, RepositoryContext } from '../shared/protocol';
+import type { ToHost, ToWebview, Snapshot, Strategy, CommitDetail, PullRequestState, RepositoryContext, NativeGitAction, WriteAction, WriteTicket } from '../shared/protocol';
 import { esc } from '../shared/html';
 import { button, icon, renderGraph, renderLiveStage, renderBranchPopover, livePhase, renderCommitDetail, renderReview, renderWorkingTree, type ReviewState, type LiveState } from './render';
 import { version } from '../../package.json';
 import { renderTaskControls, type TaskView } from './task';
 import { presentTask } from './presentation';
 import { renderPullRequest, renderLoadingGraph } from './remote';
-import { repositoryContext, sameContext } from '../shared/protocol';
+import { repositoryContext, sameContext, nativeGitLabels } from '../shared/protocol';
 
 declare function acquireVsCodeApi(): { postMessage(message: ToHost): void };
 let api: ReturnType<typeof acquireVsCodeApi> | undefined;
@@ -16,7 +16,10 @@ const drafts = new Map<string, string>();
 const app: {
     booted: boolean; snapshot: Snapshot | null; live: LiveState;
     pullRequest?: PullRequestState; switching?: boolean; peekSuppressed?: boolean; peekPinned?: boolean;
-    handoff?: { kind: 'push' | 'pull'; count: number; context: RepositoryContext };
+    handoff?: { kind: NativeGitAction; ticket: WriteTicket };
+    confirmation?: { ticket: WriteTicket; refHash?: string };
+    nativePending?: { action: NativeGitAction; context: RepositoryContext; requestToken: string };
+    nativeFallback?: boolean;
     selectedPath?: string; notice?: { text: string; level: string };
     detailOpen: boolean; detail?: CommitDetail; detailHash?: string; detailLoading: boolean; detailError?: string;
     reviewOpen: boolean; review: ReviewState; requestId: number; conflictsOpen: boolean; peekOpen: boolean; branchPickerOpen: boolean;
@@ -29,6 +32,20 @@ root.innerHTML = `<header id="toolbar"></header><main class="task-workspace"><di
 const htmlCache = new Map<string, string>();
 let lastPhase = '';
 const post = (message: ToHost) => { api?.postMessage(message); };
+function writeTicket(): WriteTicket | undefined {
+    const s = app.snapshot;
+    return s && !s.preview && s.writeToken ? { context: repositoryContext(s), writeToken: s.writeToken } : undefined;
+}
+function postWrite(message: WriteAction, ticket = writeTicket()): boolean {
+    if (!ticket || !sameContext(ticket.context, app.snapshot) || app.snapshot?.preview ||
+        (message.type === 'merge' && !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(message.refHash))) {
+        app.live = { kind: 'error', text: '页面状态已变化，请刷新后重新确认。' };
+        app.review.committing = false; app.nativePending = undefined;
+        return false;
+    }
+    post({ ...message, ...ticket });
+    return true;
+}
 
 function update(id: string, html: string): void {
     if (htmlCache.get(id) === html) return;
@@ -49,7 +66,7 @@ function update(id: string, html: string): void {
     const patch = el.querySelector<HTMLElement>('.patch');
     if (patch && scroll !== undefined) patch.scrollTop = scroll;
 }
-function busy(): boolean { return !!app.switching || app.live.kind === 'merging' || app.live.kind === 'resolving' || app.review.committing; }
+function busy(): boolean { return !!app.switching || !!app.nativePending || app.live.kind === 'merging' || app.live.kind === 'resolving' || app.review.committing; }
 function phase(): string {
     if (!app.booted) return 'loading';
     if (app.review.committing) return 'committing';
@@ -57,7 +74,7 @@ function phase(): string {
     return livePhase(app.snapshot, app.live);
 }
 function draftKey(s = app.snapshot): string { return JSON.stringify([s?.repoId, s?.headName]); }
-function clearRemote(): void { app.pullRequest = undefined; app.handoff = undefined; }
+function clearRemote(): void { app.pullRequest = undefined; app.handoff = undefined; app.nativeFallback = false; }
 function render(): void {
     if (!app.peekOpen) app.peekPinned = false;
     const current = phase(); root.dataset.phase = current;
@@ -101,10 +118,13 @@ function render(): void {
     const stats = patch === undefined ? '' : `<span class="meta-pill" title="当前审查文件的增删行数"><span class="addition-text">+${patch.split('\n').filter(l => l.startsWith('+') && !l.startsWith('+++')).length}</span><span class="deletion-text">−${patch.split('\n').filter(l => l.startsWith('-') && !l.startsWith('---')).length}</span><span>当前文件</span></span>`;
     const chips = presentation.chips.map(c => `<span class="meta-pill ${c.tone}"><i class="meta-dot" aria-hidden="true"></i>${esc(c.label)}</span>`).join('');
     const branch = preview ? undefined : app.snapshot?.branchList?.find(b => b.current);
-    const remoteActions = `${branch?.ahead ? button('native-push', `↑${branch.ahead} Push`, 'remote-action', disabled) : ''}${branch?.behind ? button('native-pull', `↓${branch.behind} Pull`, 'remote-action', disabled) : ''}`;
+    const native = preview ? undefined : app.snapshot?.nativeGit;
+    const remoteActions = native ? [
+        ...(native.hasHead ? [native.hasUpstream ? 'push' : 'publish', 'pull', ...(native.hasUpstream ? ['sync'] : [])] : []), 'fetch'
+    ].map(kind => button(`native-${kind}`, `${kind === 'push' && branch?.ahead ? `↑${branch.ahead} ` : kind === 'pull' && branch?.behind ? `↓${branch.behind} ` : ''}${nativeGitLabels[kind as NativeGitAction]}`, 'remote-action', disabled)).join('') : '';
     update('task-meta', chips + remoteActions + stats);
     const handoff = app.handoff;
-    update('native-confirm', handoff ? `<div class="native-confirm"><div><strong>${handoff.kind === 'push' ? 'Push' : 'Pull'} 由编辑器原生 Git 完成</strong><p>当前分支${handoff.kind === 'push' ? '领先' : '落后'}上游 ${handoff.count} 个提交。打开 Source Control 后，选择对应仓库完成操作。</p></div><div class="actions">${button('native-go', '打开 Source Control', 'primary', disabled)}${button('native-cancel', '取消', 'text-button')}</div></div>` : '');
+    update('native-confirm', app.nativePending ? `<div class="native-confirm" role="status"><p>正在运行原生 ${nativeGitLabels[app.nativePending.action]} 流程，请查看编辑器提示…</p></div>` : handoff ? `<div class="native-confirm"><div><strong>${nativeGitLabels[handoff.kind]} 由编辑器原生 Git 完成</strong><p>将在当前仓库运行对应操作，遵循原生 Git 配置与确认流程。${handoff.kind === 'sync' ? 'Sync 会拉取并推送。' : ''}</p></div><div class="actions">${button('native-go', `继续 ${nativeGitLabels[handoff.kind]}`, 'primary', disabled)}${button('native-cancel', '取消', 'text-button')}</div></div>` : app.nativeFallback ? `<div class="native-confirm">${button('open-scm', '在 Source Control 中核对', 'text-button')}</div>` : '');
     root.dataset.quick = app.snapshot && !preview && !app.reviewOpen && !app.detailOpen && !['confirm', 'abort-confirm', 'error'].includes(app.live.kind) ? 'true' : 'false';
     update('quick-context', `<span class="quick-chip">${icon('file')}${esc(repoName)}</span><span class="quick-chip">${icon('branch')}${esc(head)}</span>`);
     const quick = document.getElementById('quick-message') as HTMLTextAreaElement;
@@ -138,7 +158,7 @@ function selectedFile() { return app.snapshot?.conflicts.find(f => f.path === ap
 function resolveLive(strategy: Strategy): void {
     const file = selectedFile(); if (busy() || !file?.hunks.length || !app.conflictsOpen) return;
     app.peekOpen = false; app.conflictsOpen = false; app.live = { kind: 'resolving', path: file.path }; app.notice = undefined;
-    post({ type: 'resolve', path: file.path, strategy }); render();
+    postWrite({ type: 'resolve', path: file.path, strategy }); render();
 }
 function quickReview(): void {
     if (!app.snapshot || app.snapshot.preview || busy() || app.review.loading) return;
@@ -155,7 +175,7 @@ function commitStaged(): void {
     const r = app.review;
     if (busy() || r.loading || r.error || !r.data || r.data.blocked || !r.draft.trim()) return;
     r.committing = true; app.notice = undefined;
-    post({ type: 'commit-staged', repoId: r.data.repoId, token: r.data.token, message: r.draft }); render();
+    postWrite({ type: 'commit-staged', repoId: r.data.repoId, token: r.data.token, message: r.draft }); render();
 }
 async function copyPrompt(): Promise<void> {
     const file = selectedFile();
@@ -204,10 +224,10 @@ function action(name: string, element: HTMLElement): void {
         case 'commit-staged': commitStaged(); break;
         case 'workflow-tab': closeDetail(); app.reviewOpen = false; app.live = { kind: 'overview' }; render(); break;
         case 'refresh': post({ type: 'refresh' }); break;
-        case 'merge-ask': app.branchPickerOpen = false; app.live = { kind: 'confirm', ref: element.dataset.ref! }; app.notice = undefined; render(); break;
-        case 'merge-go': if (app.live.kind === 'confirm') { const ref = app.live.ref; app.live = { kind: 'merging', ref }; post({ type: 'merge', ref }); render(); } break;
-        case 'abort-ask': app.live = { kind: 'abort-confirm' }; render(); break;
-        case 'abort-go': if (app.live.kind === 'abort-confirm') { app.live = { kind: 'merging', ref: '中止当前合并' }; post({ type: 'abort-merge' }); render(); } break;
+        case 'merge-ask': app.confirmation = writeTicket() ? { ticket: writeTicket()!, refHash: app.snapshot?.branchList?.find(b => b.local && b.name === element.dataset.ref)?.commit } : undefined; app.branchPickerOpen = false; app.live = { kind: 'confirm', ref: element.dataset.ref! }; app.notice = undefined; render(); break;
+        case 'merge-go': if (app.live.kind === 'confirm') { const ref = app.live.ref; app.live = { kind: 'merging', ref }; postWrite({ type: 'merge', ref, refHash: app.confirmation?.refHash || '' }, app.confirmation?.ticket); app.confirmation = undefined; render(); } break;
+        case 'abort-ask': app.confirmation = writeTicket() ? { ticket: writeTicket()! } : undefined; app.live = { kind: 'abort-confirm' }; render(); break;
+        case 'abort-go': if (app.live.kind === 'abort-confirm') { app.live = { kind: 'merging', ref: '中止当前合并' }; postWrite({ type: 'abort-merge' }, app.confirmation?.ticket); app.confirmation = undefined; render(); } break;
         case 'live-back': app.branchPickerOpen = false; app.live = { kind: 'overview' }; app.notice = undefined; render(); break;
         case 'select-conflict': app.selectedPath = element.dataset.path; app.notice = undefined; render(); break;
         case 'open-file': { const f = selectedFile(); if (f) post({ type: 'open-file', path: f.path }); break; }
@@ -217,7 +237,7 @@ function action(name: string, element: HTMLElement): void {
         case 'stage-working-change':
             if (element.dataset.path && app.snapshot) {
                 closeDetail(); resetReview(); app.live = { kind: 'resolving', path: element.dataset.path };
-                post({ type: 'stage-working-change', path: element.dataset.path, repoId: app.snapshot.repoId }); render();
+                postWrite({ type: 'stage-working-change', path: element.dataset.path, repoId: app.snapshot.repoId }); render();
             }
             break;
         case 'open-conflict-diff': case 'open-merge-editor': {
@@ -225,28 +245,31 @@ function action(name: string, element: HTMLElement): void {
         }
         case 'native-stage-conflicts':
             app.live = { kind: 'resolving', path: '官方冲突处理' };
-            post({ type: 'native-stage-conflicts' }); render(); break;
-        case 'stage': { const f = selectedFile(); if (f) { app.live = { kind: 'resolving', path: f.path }; post({ type: 'stage', path: f.path }); render(); } break; }
-        case 'native-push': case 'native-pull': {
-            if (!app.snapshot || app.snapshot.preview) return;
-            const branch = app.snapshot.branchList?.find(b => b.current);
-            const count = name === 'native-push' ? branch?.ahead : branch?.behind;
-            if (!count) return;
-            app.handoff = { kind: name === 'native-push' ? 'push' : 'pull', count, context: repositoryContext(app.snapshot) };
+            postWrite({ type: 'native-stage-conflicts' }); render(); break;
+        case 'stage': { const f = selectedFile(); if (f) { app.live = { kind: 'resolving', path: f.path }; postWrite({ type: 'stage', path: f.path }); render(); } break; }
+        case 'native-push': case 'native-pull': case 'native-fetch': case 'native-sync': case 'native-publish': {
+            const ticket = writeTicket();
+            if (!ticket) return;
+            app.handoff = { kind: name.slice('native-'.length) as NativeGitAction, ticket };
+            app.nativeFallback = false;
             render(); break;
         }
         case 'native-cancel': app.handoff = undefined; render(); break;
-        case 'native-go':
-            if (app.handoff && sameContext(app.handoff.context, app.snapshot) && !app.snapshot?.preview) {
-                post({ type: 'open-scm' });
-                app.handoff = undefined;
+        case 'native-go': {
+            const handoff = app.handoff;
+            if (handoff) {
+                app.nativePending = { action: handoff.kind, context: handoff.ticket.context, requestToken: handoff.ticket.writeToken };
+                postWrite({ type: 'native-git', action: handoff.kind }, handoff.ticket);
+                app.handoff = undefined; app.notice = undefined;
                 render();
             }
             break;
+        }
         case 'connect-github': case 'refresh-github': case 'open-pull-request':
             if (app.snapshot && !app.snapshot.preview) post({ type: name, context: repositoryContext(app.snapshot) });
             break;
-        case 'open-scm': case 'suggest-commit': case 'open-workbench': post({ type: name }); break;
+        case 'suggest-commit': postWrite({ type: name }); break;
+        case 'open-scm': case 'open-workbench': post({ type: name }); break;
         case 'copy': void copyPrompt(); break;
         case 'inspect-commit': inspect(element.dataset.hash!); break;
         case 'history-file': if (app.detailHash) inspect(app.detailHash, element.dataset.path); break;
@@ -339,7 +362,10 @@ window.addEventListener('message', (event: MessageEvent<ToWebview>) => {
         case 'hydrate': clearRemote(); app.switching = false; app.booted = true; app.snapshot = m.snapshot; if (m.notice) app.notice = { text: m.notice, level: 'info' }; break;
         case 'snapshot': {
             const previous = app.snapshot; app.snapshot = m.snapshot; app.switching = false;
-            if (!sameContext(previous, m.snapshot) || previous?.preview?.ref !== m.snapshot?.preview?.ref) clearRemote();
+            if (!sameContext(previous, m.snapshot) || previous?.preview?.ref !== m.snapshot?.preview?.ref) {
+                clearRemote(); app.confirmation = undefined;
+                if (['confirm', 'abort-confirm'].includes(app.live.kind)) app.live = { kind: 'overview' };
+            }
             if (previous?.repoId !== m.snapshot?.repoId || previous?.headName !== m.snapshot?.headName) { closeDetail(); resetReview(); app.live = { kind: 'overview' }; app.conflictsOpen = false; app.peekOpen = false; app.branchPickerOpen = false; app.selectedPath = undefined; }
             if (app.reviewOpen && !app.review.committing && previous && (previous.headHash !== m.snapshot?.headHash || previous.stagedCount !== m.snapshot?.stagedCount)) app.review.error = '仓库状态已变化，请重新加载审查。';
             break;
@@ -348,6 +374,12 @@ window.addEventListener('message', (event: MessageEvent<ToWebview>) => {
         case 'pull-request':
             if (app.switching || app.snapshot?.preview || !sameContext(app.snapshot, m.context)) return;
             app.pullRequest = m.state; break;
+        case 'native-git-result':
+            if (!app.nativePending || app.nativePending.requestToken !== m.requestToken || app.nativePending.action !== m.action || !sameContext(app.nativePending.context, m.context)) return;
+            app.nativePending = undefined;
+            app.nativeFallback = m.kind !== 'cancelled';
+            if (app.snapshot?.repoId === m.context.repoId) app.notice = { level: m.kind === 'error' ? 'error' : 'info', text: m.text };
+            break;
         case 'live-result':
             app.live = m.kind === 'error' ? { kind: 'error', text: m.text || '操作未完成。' } : { kind: 'overview' };
             if (m.kind !== 'error' && m.text) app.notice = { level: 'info', text: m.text };

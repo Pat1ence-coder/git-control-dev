@@ -13,8 +13,9 @@ const snapshot: Snapshot = {
     canMerge: true, canAbort: true, graph: { laneCount: 1, nodes: [], edges: [] }
 };
 
-function hostHarness(options: { busy?: boolean; mergeError?: Error } = {}) {
+function hostHarness(options: { busy?: boolean; mergeError?: Error; mergeWait?: Promise<void> } = {}) {
     const messages: ToWebview[] = [];
+    let latest = snapshot;
     const calls: string[] = [];
     const changes = new EventEmitter<void>();
     const incoming = new EventEmitter<unknown>();
@@ -23,6 +24,7 @@ function hostHarness(options: { busy?: boolean; mergeError?: Error } = {}) {
         onDidChange: changes.event,
         whenReady: async () => { },
         startupProblem: undefined,
+        prepareWrite: async (_context: unknown, validate: () => void) => { validate(); return { repo: {}, check: async () => { validate(); }, assertCurrent: validate }; },
         snapshot: async (previewRef?: string) => { calls.push(previewRef ? `snapshot:${previewRef}` : 'snapshot'); return snapshot; },
         select: async (id: string) => { calls.push(`select:${id}`); changes.fire(); }
     }, {
@@ -32,6 +34,7 @@ function hostHarness(options: { busy?: boolean; mergeError?: Error } = {}) {
                 calls.push(String(key));
                 if (key === 'merge') {
                     if (options.mergeError) throw options.mergeError;
+                    await options.mergeWait;
                     return { conflict: false };
                 }
                 if (key === 'commitStaged') return 'a'.repeat(40);
@@ -45,12 +48,17 @@ function hostHarness(options: { busy?: boolean; mergeError?: Error } = {}) {
             options: {}, html: '', cspSource: 'vscode-webview:',
             asWebviewUri: (uri: Uri) => uri,
             onDidReceiveMessage: incoming.event,
-            postMessage: (message: ToWebview) => { messages.push(message); return Promise.resolve(true); }
+            postMessage: (message: ToWebview) => { if ((message.type === 'hydrate' || message.type === 'snapshot') && message.snapshot) latest = message.snapshot; messages.push(message); return Promise.resolve(true); }
         },
         onDidDispose: disposed.event
     };
     provider.resolveWebviewView(view as any);
-    return { messages, calls, provider, view, send: (message: unknown) => incoming.fire(message) };
+    return { messages, calls, provider, view, sendRaw: (message: unknown) => incoming.fire(message),
+        ticket: () => ({ context: { repoId: latest.repoId, headName: latest.headName, headHash: latest.headHash }, writeToken: latest.writeToken }),
+        send: (message: any) => {
+            const writes = ['merge', 'stage', 'resolve', 'abort-merge', 'native-stage-conflicts', 'commit-staged', 'stage-working-change', 'suggest-commit'];
+            incoming.fire(writes.includes(message.type) ? { refHash: 'b'.repeat(40), ...message, context: { repoId: latest.repoId, headName: latest.headName, headHash: latest.headHash }, writeToken: latest.writeToken } : message);
+        } };
 }
 
 test('live host hydrates a real snapshot with no mode or demo fields', async () => {
@@ -60,7 +68,8 @@ test('live host hydrates a real snapshot with no mode or demo fields', async () 
         const hydrate = host.messages.find(m => m.type === 'hydrate');
         assert.equal(hydrate?.type, 'hydrate');
         if (!hydrate || hydrate.type !== 'hydrate') return;
-        assert.equal(hydrate.snapshot, snapshot);
+        assert.deepEqual({ ...hydrate.snapshot, writeToken: undefined }, { ...snapshot, writeToken: undefined });
+        assert.match(hydrate.snapshot?.writeToken || '', /^[a-f0-9]{48}$/);
         assert.ok(!('mode' in hydrate));
         assert.ok(!('hasRepo' in hydrate));
         assert.match(host.view.webview.html, /default-src 'none'/);
@@ -133,4 +142,53 @@ test('branch preview is read-only and refreshes without changing the repository'
         await host.send({ type: 'preview-current' }); await tick(); await tick();
         assert.ok(host.calls.includes('snapshot'));
     } finally { host.provider.dispose(); }
+});
+
+test('write requests cannot omit or change host authorization, and cannot replay a consumed token', async () => {
+    const h = hostHarness();
+    try {
+        h.send({ type: 'ready' }); await tick(); await tick();
+        const payload = { type: 'merge', ref: 'feature', refHash: 'b'.repeat(40), ...h.ticket() };
+        h.sendRaw({ ...payload, writeToken: undefined }); await tick();
+        assert.equal(h.calls.filter(c => c === 'merge').length, 0);
+        h.sendRaw({ ...payload, context: { repoId: '/other', headName: 'main' } }); await tick(); await tick();
+        assert.equal(h.calls.filter(c => c === 'merge').length, 0);
+        const current = { ...payload, ...h.ticket() };
+        h.sendRaw(current); await tick(); await tick();
+        assert.equal(h.calls.filter(c => c === 'merge').length, 1);
+        h.sendRaw(current); await tick(); await tick();
+        assert.equal(h.calls.filter(c => c === 'merge').length, 1);
+        assert.ok(h.messages.some(m => m.type === 'live-result' && /已过期|已使用/.test(m.text || '')));
+    } finally { h.provider.dispose(); }
+});
+
+test('host preview blocks writes even if a caller supplies the earlier live ticket', async () => {
+    const h = hostHarness();
+    try {
+        h.send({ type: 'ready' }); await tick(); await tick();
+        const ticket = h.ticket();
+        h.send({ type: 'preview-branch', ref: 'refs/heads/feature' }); await tick(); await tick();
+        h.sendRaw({ type: 'merge', ref: 'feature', refHash: 'b'.repeat(40), ...ticket });
+        await tick(); await tick();
+        assert.ok(!h.calls.includes('merge'));
+        assert.equal(h.ticket().writeToken, undefined);
+    } finally { h.provider.dispose(); }
+});
+
+test('host keeps the shared lock until the real write ends; selection and duplicates do not run', async () => {
+    let release!: () => void;
+    const wait = new Promise<void>(resolve => { release = resolve; });
+    const h = hostHarness({ mergeWait: wait });
+    try {
+        h.send({ type: 'ready' }); await tick(); await tick();
+        const payload = { type: 'merge', ref: 'feature', refHash: 'b'.repeat(40), ...h.ticket() };
+        h.sendRaw(payload); await tick();
+        h.sendRaw(payload); h.send({ type: 'select-repo', repoId: '/repo2' });
+        await tick();
+        assert.equal(h.calls.filter(c => c === 'merge').length, 1);
+        assert.ok(!h.calls.includes('select:/repo2'));
+        release(); await tick(); await tick();
+        h.send({ type: 'select-repo', repoId: '/repo2' }); await tick();
+        assert.ok(h.calls.includes('select:/repo2'));
+    } finally { release(); h.provider.dispose(); }
 });

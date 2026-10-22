@@ -1,5 +1,8 @@
 import type { GraphModel } from './model';
 export type Strategy = 'current' | 'incoming' | 'both' | 'ai';
+export const nativeGitActions = ['push', 'pull', 'fetch', 'sync', 'publish'] as const;
+export type NativeGitAction = typeof nativeGitActions[number];
+export const nativeGitLabels: Record<NativeGitAction, string> = { push: 'Push', pull: 'Pull', fetch: 'Fetch', sync: 'Sync', publish: 'Publish' };
 export interface Hunk {
     start: number;
     end: number;
@@ -40,6 +43,9 @@ export interface BranchPreview {
     graph: GraphModel;
 }
 export interface Snapshot {
+    /** One-use workbench capability, issued by the host, never an authentication credential. */
+    writeToken?: string;
+    nativeGit?: { hasHead: boolean; hasUpstream: boolean };
     repoId: string;
     repoName: string;
     repositories: {
@@ -116,8 +122,25 @@ export interface StagedReview {
     unstagedCount: number;
     blocked?: string;
 }
-export type ToHost = {
-    type: 'ready' | 'refresh' | 'abort-merge' | 'suggest-commit' | 'open-scm' | 'open-workbench' | 'native-stage-conflicts' | 'preview-current';
+export type WriteAction = {
+    type: 'abort-merge' | 'native-stage-conflicts' | 'suggest-commit';
+} | {
+    type: 'merge'; ref: string; refHash: string;
+} | {
+    type: 'resolve'; path: string; strategy: Strategy;
+} | {
+    type: 'stage'; path: string;
+} | {
+    type: 'stage-working-change'; repoId: string; path: string;
+} | {
+    type: 'commit-staged'; repoId: string; token: string; message: string;
+} | {
+    type: 'native-git'; action: NativeGitAction;
+};
+export interface WriteTicket { context: RepositoryContext; writeToken: string }
+export type WriteMessage = WriteAction & WriteTicket;
+export type ToHost = WriteMessage | {
+    type: 'ready' | 'refresh' | 'open-scm' | 'open-workbench' | 'preview-current';
 } | {
     type: 'connect-github' | 'refresh-github' | 'open-pull-request';
     context: RepositoryContext;
@@ -128,17 +151,10 @@ export type ToHost = {
     type: 'preview-branch';
     ref: string;
 } | {
-    type: 'merge';
-    ref: string;
-} | {
-    type: 'resolve';
-    path: string;
-    strategy: Strategy;
-} | {
-    type: 'stage' | 'open-file' | 'open-conflict-diff' | 'open-merge-editor';
+    type: 'open-file' | 'open-conflict-diff' | 'open-merge-editor';
     path: string;
 } | {
-    type: 'open-working-change' | 'stage-working-change';
+    type: 'open-working-change';
     repoId: string;
     path: string;
 } | {
@@ -153,13 +169,15 @@ export type ToHost = {
     type: 'review-staged';
     path?: string;
     requestId: number;
-} | {
-    type: 'commit-staged';
-    repoId: string;
-    token: string;
-    message: string;
 };
 export type ToWebview = PullRequestMessage | {
+    type: 'native-git-result';
+    requestToken: string;
+    context: RepositoryContext;
+    action: NativeGitAction;
+    kind: 'returned' | 'cancelled' | 'unavailable' | 'error';
+    text: string;
+} | {
     type: 'hydrate';
     snapshot: Snapshot | null;
     notice?: string;
@@ -214,6 +232,33 @@ export function asHostMessage(value: unknown): ToHost | undefined {
         return;
     const m = value as Record<string, unknown>;
     const str = (key: string, max = 4096) => typeof m[key] === 'string' && (m[key] as string).length > 0 && (m[key] as string).length <= max;
+    const writeTypes = ['merge', 'resolve', 'stage', 'stage-working-change', 'commit-staged', 'abort-merge', 'native-stage-conflicts', 'suggest-commit', 'native-git'];
+    if (typeof m.type === 'string' && writeTypes.includes(m.type)) {
+        const context = parseContext(m.context);
+        if (!context || typeof m.writeToken !== 'string' || !/^[a-f0-9]{48}$/.test(m.writeToken)) return;
+        const ticket = { context, writeToken: m.writeToken };
+        switch (m.type) {
+            case 'abort-merge': case 'native-stage-conflicts': case 'suggest-commit': return { type: m.type, ...ticket };
+            case 'merge':
+                if (str('ref', 200) && typeof m.refHash === 'string' && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(m.refHash))
+                    return { type: m.type, ref: m.ref as string, refHash: m.refHash, ...ticket };
+                return;
+            case 'resolve':
+                if (str('path') && ['current', 'incoming', 'both', 'ai'].includes(m.strategy as string))
+                    return { type: m.type, path: m.path as string, strategy: m.strategy as Strategy, ...ticket };
+                return;
+            case 'stage':
+                return str('path') ? { type: m.type, path: m.path as string, ...ticket } : undefined;
+            case 'stage-working-change':
+                return str('path') && m.repoId === context.repoId ? { type: m.type, repoId: context.repoId, path: m.path as string, ...ticket } : undefined;
+            case 'commit-staged':
+                if (m.repoId === context.repoId && str('message', 20000) && typeof m.token === 'string' && /^[a-f0-9]{64}$/.test(m.token))
+                    return { type: m.type, repoId: context.repoId, token: m.token, message: m.message as string, ...ticket };
+                return;
+            case 'native-git':
+                return nativeGitActions.includes(m.action as NativeGitAction) ? { type: m.type, action: m.action as NativeGitAction, ...ticket } : undefined;
+        }
+    }
     switch (m.type) {
         case 'connect-github':
         case 'refresh-github':
@@ -223,10 +268,7 @@ export function asHostMessage(value: unknown): ToHost | undefined {
         }
         case 'ready':
         case 'refresh':
-        case 'abort-merge':
-        case 'suggest-commit':
         case 'open-scm':
-        case 'native-stage-conflicts':
         case 'open-workbench':
         case 'preview-current': return { type: m.type };
         case 'select-repo':
@@ -237,15 +279,6 @@ export function asHostMessage(value: unknown): ToHost | undefined {
             if (str('ref', 300))
                 return m as unknown as ToHost;
             break;
-        case 'merge':
-            if (str('ref', 200))
-                return m as unknown as ToHost;
-            break;
-        case 'resolve':
-            if (str('path') && typeof m.strategy === 'string' && ['current', 'incoming', 'both', 'ai'].includes(m.strategy))
-                return m as unknown as ToHost;
-            break;
-        case 'stage':
         case 'open-file':
         case 'open-conflict-diff':
         case 'open-merge-editor':
@@ -253,7 +286,6 @@ export function asHostMessage(value: unknown): ToHost | undefined {
                 return m as unknown as ToHost;
             break;
         case 'open-working-change':
-        case 'stage-working-change':
             if (str('repoId') && str('path')) return m as unknown as ToHost;
             break;
         case 'copy':
@@ -267,8 +299,5 @@ export function asHostMessage(value: unknown): ToHost | undefined {
             if (Number.isSafeInteger(m.requestId) && (m.path === undefined || str('path')))
                 return m as unknown as ToHost;
             break;
-        case 'commit-staged':
-            if (str('repoId') && str('message', 20000) && typeof m.token === 'string' && /^[a-f0-9]{64}$/.test(m.token))
-                return m as unknown as ToHost;
     }
 }

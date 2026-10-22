@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import path from 'node:path';
 import { realpath } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import type { GitAPI, GitExtension, Repository, Commit, Ref, Change } from './types';
+import type { GitAPI, GitExtension, Repository, Commit, Ref, Change, WriteGuard } from './types';
 import type { Snapshot, ConflictFile, Strategy, CommitDetail, StagedReview, BranchInfo, BranchPreview } from '../shared/protocol';
 import { applyResolution, hasConflictMarkers, parseConflict } from './conflicts';
 import { layoutCommits, withPendingMerge } from './layout';
@@ -27,6 +27,7 @@ export class GitService implements vscode.Disposable {
     private selected?: string;
     private ready: Promise<void> = Promise.resolve();
     private readonly reviewTokens = new Map<string, string>();
+    private writeEpoch = 0;
     private readonly metadata = new GitMetadata();
     private readonly github = new GitHubReader();
     startupProblem?: string;
@@ -93,7 +94,8 @@ export class GitService implements vscode.Disposable {
             this.startupProblem = undefined;
             const api = this.api = git.getAPI(1);
             const sync = () => { this.syncRepositories(); this.schedule(); };
-            this.subscriptions.push(api.onDidChangeState(sync), api.onDidOpenRepository(sync), api.onDidCloseRepository(sync));
+            const lifecycle = () => { this.writeEpoch++; this.reviewTokens.clear(); sync(); };
+            this.subscriptions.push(api.onDidChangeState(lifecycle), api.onDidOpenRepository(lifecycle), api.onDidCloseRepository(lifecycle));
             sync();
         };
         this.subscriptions.push(git.onDidChangeEnablement(enabled => {
@@ -140,9 +142,53 @@ export class GitService implements vscode.Disposable {
         return this.api?.repositories.find(r => this.selected && samePath(r.rootUri.fsPath, this.selected)) || (vscode.workspace.workspaceFolders?.[0] ? this.api?.getRepository(vscode.workspace.workspaceFolders[0].uri) : undefined) || this.api?.repositories[0];
     }
     async select(id: string): Promise<void> { if (!this.api?.repositories.some(r => samePath(r.rootUri.fsPath, id)))
-        throw new UserFacingError('仓库已关闭，请刷新。'); this.selected = id; await this.state.update('repo', id); this.changed.fire(); }
+        throw new UserFacingError('仓库已关闭，请刷新。'); this.writeEpoch++; this.selected = id; await this.state.update('repo', id); this.changed.fire(); }
     private requireRepo(): Repository { const repo = this.repository; if (!repo)
         throw new UserFacingError('请先打开一个本地 Git 仓库。'); return repo; }
+    /** Pin the repository and HEAD. Read-only fallback is never write authorization.
+     * The callback also binds asynchronous confirmation to the originating view.
+     */
+    async prepareWrite(expected?: RepositoryContext, assertHost: () => void = () => {}): Promise<WriteGuard> {
+        if (!vscode.workspace.isTrusted) throw new UserFacingError('请先信任当前工作区，再执行 Git 操作。');
+        assertHost();
+        const id = expected?.repoId ?? this.selected ?? this.repository?.rootUri.fsPath;
+        const repo = this.api?.repositories.find(r => id && samePath(r.rootUri.fsPath, id));
+        if (!repo || repo.rootUri.scheme !== 'file') throw new UserFacingError('原仓库已关闭或不可用，请刷新后重新操作。');
+        const epoch = this.writeEpoch;
+        const selected = this.repository;
+        if (!selected || !samePath(selected.rootUri.fsPath, repo.rootUri.fsPath))
+            throw new UserFacingError('当前仓库已切换，请刷新后重新操作。');
+        const assertPresent = () => {
+            assertHost();
+            const current = this.repository;
+            const exact = this.api?.repositories.some(r => samePath(r.rootUri.fsPath, repo.rootUri.fsPath));
+            const routed = this.api?.getRepository(repo.rootUri);
+            if (!vscode.workspace.isTrusted || epoch !== this.writeEpoch || !exact || !current ||
+                !samePath(current.rootUri.fsPath, repo.rootUri.fsPath) || !routed || !samePath(routed.rootUri.fsPath, repo.rootUri.fsPath))
+                throw new UserFacingError('仓库上下文已变化，请刷新并重新确认；未继续执行写操作。');
+        };
+        await repo.status();
+        assertPresent();
+        const context = expected ? { ...expected } : {
+            repoId: repo.rootUri.fsPath, headName: repo.state.HEAD?.name || 'HEAD', headHash: repo.state.HEAD?.commit
+        };
+        const identity = (await this.metadata.identity(repo)).identity;
+        const head = await this.gitFile(repo, 'HEAD');
+        const check = async () => {
+            assertPresent();
+            await repo.status();
+            if (identity !== (await this.metadata.identity(repo)).identity || head !== await this.gitFile(repo, 'HEAD'))
+                throw new UserFacingError('仓库身份或 HEAD 已变化，请重新确认。');
+            let actualHash: string | undefined;
+            try { actualHash = (await repo.getCommit('HEAD')).hash; }
+            catch (error) { if (context.headHash || repo.state.HEAD?.commit) throw error; }
+            if (!sameContext(context, { repoId: repo.rootUri.fsPath, headName: repo.state.HEAD?.name || 'HEAD', headHash: actualHash }))
+                throw new UserFacingError('分支或 HEAD 已变化，请刷新并重新确认。');
+            assertPresent();
+        };
+        await check();
+        return { repo, check, assertCurrent: assertPresent };
+    }
     async refresh(): Promise<void> { await this.repository?.status(); }
     private async localBranches(repo: Repository): Promise<Ref[]> {
         // Prefer getBranches: it also carries ahead/behind, unlike getRefs.
@@ -246,12 +292,19 @@ export class GitService implements vscode.Disposable {
             await vscode.commands.executeCommand('git.openChange', change.uri);
         }
     }
-    async stageWorkingChange(relative: string, repoId: string): Promise<void> {
+    async stageWorkingChange(relative: string, repoId: string, guard?: WriteGuard): Promise<void> {
+        const write = guard ?? await this.prepareWrite();
         const { repo, change } = await this.workingChange(relative, repoId);
+        if (!samePath(repo.rootUri.fsPath, write.repo.rootUri.fsPath)) throw new UserFacingError('当前仓库已切换，请重新操作。');
         this.assertSaved(repo, change.uri);
         // Use the exact current Git resource. Deleted files need no file read;
         // git add records their deletion without deleting other working files.
-        await repo.add([change.uri.fsPath]);
+        await write.check();
+        this.assertSaved(repo, change.uri);
+        if (!this.workingChanges(repo).some(c => samePath(c.uri.fsPath, change.uri.fsPath) && c.status === change.status))
+            throw new UserFacingError('文件状态已变化，请刷新后重新暂存。');
+        write.assertCurrent();
+        await write.repo.add([change.uri.fsPath]);
         this.reviewTokens.delete(repo.rootUri.fsPath);
         await repo.status();
     }
@@ -349,13 +402,13 @@ export class GitService implements vscode.Disposable {
         let graph = layoutCommits(commits.map(c => ({ ...c, badges: branches.filter(r => r.commit === c.hash).map(r => r.name!) })), repo.state.HEAD?.commit);
         if (mergeHash && !conflicts.length && repo.state.HEAD?.commit)
             graph = withPendingMerge(graph, repo.state.HEAD.commit, mergeHash.split('\n')[0]);
-        return { repoId: repo.rootUri.fsPath, repoName: path.basename(repo.rootUri.fsPath), repositories: (this.api?.repositories || []).map(r => ({ id: r.rootUri.fsPath, name: path.basename(r.rootUri.fsPath) })), headName: repo.state.HEAD?.name || 'HEAD', headHash: repo.state.HEAD?.commit, branches: branches.map(r => r.name!), conflicts, workingTreeCount: workingTreeFiles.length, workingTreeFiles, stagedCount: repo.state.indexChanges.length, mergeHead: !!mergeHash, mergingRef: /Merge (?:remote-tracking )?branch '([^']+)'/.exec(mergeMessage)?.[1], rebasing: !!repo.state.rebaseCommit, canMerge: typeof repo.merge === 'function', canAbort: typeof repo.mergeAbort === 'function', graph, branchList, preview };
+        return { nativeGit: { hasHead: !!repo.state.HEAD?.commit && repo.state.HEAD?.type === 0, hasUpstream: !!repo.state.HEAD?.upstream }, repoId: repo.rootUri.fsPath, repoName: path.basename(repo.rootUri.fsPath), repositories: (this.api?.repositories || []).map(r => ({ id: r.rootUri.fsPath, name: path.basename(r.rootUri.fsPath) })), headName: repo.state.HEAD?.name || 'HEAD', headHash: repo.state.HEAD?.commit, branches: branches.map(r => r.name!), conflicts, workingTreeCount: workingTreeFiles.length, workingTreeFiles, stagedCount: repo.state.indexChanges.length, mergeHead: !!mergeHash, mergingRef: /Merge (?:remote-tracking )?branch '([^']+)'/.exec(mergeMessage)?.[1], rebasing: !!repo.state.rebaseCommit, canMerge: typeof repo.merge === 'function', canAbort: typeof repo.mergeAbort === 'function', graph, branchList, preview };
     }
-    async merge(ref: string): Promise<{
+    async merge(ref: string, guard?: WriteGuard, expectedSource?: string): Promise<{
         conflict: boolean;
     }> {
-        const repo = this.requireRepo();
-        await repo.status();
+        const write = guard ?? await this.prepareWrite(), repo = write.repo;
+        await write.check();
         this.assertSaved(repo);
         if (repo.state.indexChanges.length || repo.state.workingTreeChanges.length || repo.state.untrackedChanges?.length)
             throw new UserFacingError('合并前请先提交或 stash 本地改动，以便失败时安全中止。');
@@ -365,8 +418,17 @@ export class GitService implements vscode.Disposable {
             throw new UserFacingError('请先完成当前合并或变基。');
         if (!repo.merge)
             throw new UserFacingError('当前 Git API 不支持发起合并。请在终端执行 git merge，冲突会自动显示在这里。');
+        const source = (await repo.getCommit(`refs/heads/${ref}`)).hash;
+        if (expectedSource && source !== expectedSource) throw new UserFacingError('待合并分支已变化，请刷新并重新确认。');
+        await write.check();
+        this.assertSaved(repo);
+        if (repo.state.indexChanges.length || this.workingChanges(repo).length || repo.state.mergeChanges.length ||
+            repo.state.rebaseCommit || await this.gitFile(repo, 'MERGE_HEAD'))
+            throw new UserFacingError('合并前仓库状态已变化，请先处理本地改动或进行中的操作。');
+        write.assertCurrent();
         try {
-            await repo.merge(ref);
+            // Pin the source object as well as checking the destination HEAD.
+            await repo.merge(source);
             await repo.status();
             return { conflict: repo.state.mergeChanges.length > 0 };
         }
@@ -379,8 +441,8 @@ export class GitService implements vscode.Disposable {
             throw e;
         }
     }
-    async abortMerge(): Promise<void> {
-        const repo = this.requireRepo();
+    async abortMerge(guard?: WriteGuard): Promise<void> {
+        const write = guard ?? await this.prepareWrite(), repo = write.repo;
         if (!await this.gitFile(repo, 'MERGE_HEAD') || repo.state.rebaseCommit)
             throw new UserFacingError('当前没有可中止的 merge。');
         if (!repo.mergeAbort)
@@ -389,9 +451,11 @@ export class GitService implements vscode.Disposable {
         const fingerprint = await this.reviewFingerprint(repo);
         if (await vscode.window.showWarningMessage('中止合并会丢弃本次冲突解决的工作区改动。已保存的冲突备份仍可从命令面板打开。', { modal: true }, '中止合并') !== '中止合并')
             throw new UserFacingError('已取消中止合并。');
+        await write.check();
         this.assertSaved(repo);
         if (fingerprint !== await this.reviewFingerprint(repo))
             throw new UserFacingError('确认期间仓库发生变化，未中止合并。请刷新后再操作。');
+        write.assertCurrent();
         await repo.mergeAbort();
         await repo.status();
     }
@@ -421,8 +485,8 @@ export class GitService implements vscode.Disposable {
         await requireNativeCommand(command);
         await vscode.commands.executeCommand(command, change.uri);
     }
-    async stageConflictsNative(): Promise<{ remaining: number }> {
-        const repo = this.requireRepo();
+    async stageConflictsNative(guard?: WriteGuard): Promise<{ remaining: number }> {
+        const write = guard ?? await this.prepareWrite(), repo = write.repo;
         await repo.status();
         if (!repo.state.mergeChanges.length) throw new UserFacingError('当前没有未解决冲突。');
         this.assertSaved(repo);
@@ -433,15 +497,17 @@ export class GitService implements vscode.Disposable {
             `将处理 ${path.basename(repo.rootUri.fsPath)} 的全部 ${repo.state.mergeChanges.length} 个冲突文件。官方会询问保留或删除，以及是否暂存未解决的冲突。取消后可能已有部分文件完成暂存。`,
             { modal: true }, confirm) !== confirm)
             throw new UserFacingError('已取消官方暂存。');
+        await write.check();
         this.assertSaved(repo);
         if (fingerprint !== await this.reviewFingerprint(repo))
             throw new UserFacingError('确认期间仓库发生变化，请刷新后重新处理冲突。');
+        write.assertCurrent();
         await vscode.commands.executeCommand('git.stageAllMerge', repo.rootUri);
         await repo.status();
         return { remaining: repo.state.mergeChanges.length };
     }
-    async resolve(relative: string, strategy: Strategy): Promise<string> {
-        const repo = this.requireRepo();
+    async resolve(relative: string, strategy: Strategy, guard?: WriteGuard): Promise<string> {
+        const write = guard ?? await this.prepareWrite(), repo = write.repo;
         await repo.status();
         const uri = await this.conflictPath(repo, relative);
         this.assertSaved(repo, uri);
@@ -459,30 +525,38 @@ export class GitService implements vscode.Disposable {
             if (doc.getText() !== original || await this.readDisk(uri) !== original || fingerprint !== await this.reviewFingerprint(repo))
                 throw new UserFacingError('预览期间文件或仓库发生变化，请重新选择策略并审查。');
             await this.safety.backup(uri, original);
+            await write.check();
             this.assertSaved(repo, uri);
             await this.confined(repo, relative);
             if (doc.getText() !== original || await this.readDisk(uri) !== original || fingerprint !== await this.reviewFingerprint(repo))
                 throw new UserFacingError('备份期间文件或仓库发生变化，请重新审查。');
             const edit = new vscode.WorkspaceEdit();
             edit.replace(uri, new vscode.Range(doc.positionAt(0), doc.positionAt(original.length)), result.text);
+            write.assertCurrent();
             if (!await vscode.workspace.applyEdit(edit) || !await doc.save())
                 throw new UserFacingError('文件未成功保存，未暂存。原内容可从冲突备份恢复。');
             if (doc.isDirty || doc.getText() !== result.text || await this.readDisk(uri) !== result.text)
                 throw new UserFacingError('保存时文件发生变化，未暂存；请检查编辑器与冲突备份。');
         }
+        await write.check();
         if (fingerprint !== await this.reviewFingerprint(repo))
             throw new UserFacingError('暂存区或 HEAD 已变化，未暂存；请重新审查当前文件。');
+        write.assertCurrent();
         await repo.add([uri.fsPath]);
         await repo.status().catch(() => { });
         return result.applied ? '已写回并暂存。现在可以审查暂存改动并提交。' : '没有冲突标记，已暂存当前内容。';
     }
-    async stage(relative: string): Promise<void> {
-        const repo = this.requireRepo();
+    async stage(relative: string, guard?: WriteGuard): Promise<void> {
+        const write = guard ?? await this.prepareWrite(), repo = write.repo;
         await repo.status();
         const uri = await this.conflictPath(repo, relative);
         this.assertSaved(repo, uri);
+        await write.check();
+        await this.conflictPath(repo, relative);
+        this.assertSaved(repo, uri);
         if (hasConflictMarkers(await this.readDisk(uri)))
             throw new UserFacingError('仍有冲突标记，请先完成编辑。');
+        write.assertCurrent();
         await repo.add([uri.fsPath]);
         await repo.status().catch(() => { });
     }
@@ -493,8 +567,9 @@ export class GitService implements vscode.Disposable {
         return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
     }
     async open(relative: string): Promise<void> { await vscode.window.showTextDocument(await this.confined(this.requireRepo(), relative)); }
-    async suggestCommitMessage(): Promise<void> {
-        const repo = this.requireRepo(), message = await this.gitFile(repo, 'MERGE_MSG');
+    async suggestCommitMessage(guard?: WriteGuard): Promise<void> {
+        const write = guard ?? await this.prepareWrite(), repo = write.repo, message = await this.gitFile(repo, 'MERGE_MSG');
+        await write.check();
         repo.inputBox.value = message || `Merge branch into ${repo.state.HEAD?.name || 'HEAD'}\n\n冲突已在 Generative Git 里解决。`;
         await vscode.commands.executeCommand('workbench.view.scm');
     }
@@ -582,8 +657,8 @@ export class GitService implements vscode.Disposable {
             blocked
         };
     }
-    async commitStaged(repoId: string, token: string, message: string): Promise<string | undefined> {
-        const repo = this.requireRepo();
+    async commitStaged(repoId: string, token: string, message: string, guard?: WriteGuard): Promise<string | undefined> {
+        const write = guard ?? await this.prepareWrite(), repo = write.repo;
         if (!samePath(repo.rootUri.fsPath, repoId)) throw new UserFacingError('当前仓库已切换，请重新审查。');
         if (!message.trim() || message.length > 20000 || message.includes('\0'))
             throw new UserFacingError('请输入有效的提交说明（不超过 20,000 字符）。');
@@ -600,8 +675,10 @@ export class GitService implements vscode.Disposable {
         // diagnostics, signing, sign-off and save-before-commit preferences.
         this.reviewTokens.delete(repoId);
         const hash = await nativeCommit(repo, message.trim(), async () => {
+            await write.check();
             if (token !== await this.reviewFingerprint(repo))
                 throw new UserFacingError('进入官方提交前暂存区或仓库已变化，请重新加载审查。');
+            write.assertCurrent();
         });
         await repo.status().catch(() => {});
         this.schedule();

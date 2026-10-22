@@ -42,3 +42,20 @@ run inside the installed host; they are not vendored into this extension.
 Host updates therefore determine the precise native dialogs and settings.
 
 https://github.com/microsoft/vscode/blob/1.105.1/extensions/git/src/api/api1.ts
+
+The SCM transport adapter in `src/git/nativeGitBridge.ts` uses fixed native
+`git.push`, `git.pull`, `git.fetch`, `git.sync`, and `git.publish` commands with
+an explicitly checked repository URI. The button/command/repository behavior
+was checked against these pinned upstream sources:
+
+- VS Code 1.85.0, `af28b32d7e553898b2a91af498b1fb666fdebe0c`:
+  https://github.com/microsoft/vscode/blob/af28b32d7e553898b2a91af498b1fb666fdebe0c/extensions/git/src/commands.ts
+- VS Code main snapshot, `98c0b07a5e7f9dc75960f7e2aaa96658926851b8`:
+  https://github.com/microsoft/vscode/blob/98c0b07a5e7f9dc75960f7e2aaa96658926851b8/extensions/git/src/actionButton.ts
+  https://github.com/microsoft/vscode/blob/98c0b07a5e7f9dc75960f7e2aaa96658926851b8/extensions/git/src/repository.ts
+
+The adapter does not vendor these implementations. Native commands are not a
+stable public API; runtime availability, exact repository routing and host
+acceptance tests are required. Resolving a command promise is not treated as
+proof of remote success. One-use webview tickets and write-context guards are
+specific to this project, not guarantees provided by Microsoft.

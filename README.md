@@ -14,7 +14,7 @@
 - **本地备份**：保存冲突修改前的完整原文，支持打开和手动清理备份。
 - **任务卡片**：紧凑提交图、真实状态说明、加载骨架和状态动效；下方快速提交框先进入暂存审查，支持按仓库和分支保留会话内草稿。
 - **GitHub PR / 检查**：读取 `origin` 对应的 github.com 仓库当前分支的 PR 和 check runs。通过编辑器连接 GitHub，支持手动刷新及打开 PR；预览其他分支时隐藏当前分支的 PR。
-- **Push / Pull 入口**：根据当前分支的 ahead/behind 显示入口，确认后打开编辑器 Source Control，由用户在原生面板选择仓库完成操作。
+- **原生 Git 操作**：Push、Pull、Fetch、Sync、Publish 分别调用对应的编辑器 SCM 命令。宿主确认中显示仓库路径，随后使用原生 Git 配置、认证和交互；命令不可用时提供 Source Control 入口。
 
 ## 安装与打开
 
@@ -55,6 +55,8 @@ python3 scripts/package-vsix.py
 
 提交遵循编辑器的分支保护、诊断检查、签名、Sign-off 和保存提示设置。默认提交已暂存版本；若在官方提示中选择“保存并提交”，相关文件会按该选择更新暂存内容。需要审查最新内容时，可取消提交，保存并暂存后重新加载审查。
 
+部分旧宿主（实测 VS Code 1.85）没有本扩展核对提交结果所需的 `onDidCommit` 事件，此时会拒绝提交并提示升级；也可在 Source Control 中提交。不会改用绕过宿主检查的低层提交接口。
+
 仓库或暂存内容变化时需要重新审查。提交不会执行后续推送或同步。提交说明草稿保留在当前工作台会话中。
 
 也可在卡片下方填写提交说明，点击 **审查并提交** 或按 Enter 打开审查；Shift+Enter 换行，中文输入法确认不会触发审查。此入口不会直接提交或暂存文件。切换仓库或分支会隔离草稿，提交成功后清除对应草稿。
@@ -65,7 +67,11 @@ python3 scripts/package-vsix.py
 
 PR 状态与本地工作区状态分别展示。检查属于 PR 的远端提交，与本地 HEAD 不同时会明确标注；读取失败、未知检查状态或超过 100 项时不会表示为“全部通过”。当前仅支持同一 `origin` 仓库内的 PR，不支持跨 fork PR 查找或 GitHub Enterprise。
 
-Push / Pull 按钮只打开原生面板，不直接执行传输。创建 PR、合并 PR 和自动解决远端冲突不在本次范围内。
+Push、Pull、Fetch、Sync、Publish 使用不同的原生命令，Push 不会被替换成 Sync。Sync 包括拉取与推送；没有 upstream 时提供 Publish，由原生流程处理发布。仓库配置、hooks、标签、多个推送地址等行为与宿主 SCM 一致。
+
+操作请求绑定当前仓库、分支和 HEAD，以及宿主签发的一次性标识。确认期间切换/关闭仓库、HEAD 变化、进入只读预览或重复请求都会被拦截；原仓库不存在时不改选其他仓库。已有合并、冲突处理和暂存也使用相同的上下文保护，合并源提交会固定为确认时的对象。
+
+“原生流程已返回”不等于“远端已成功更新”：原生命令可能处理错误或取消后正常返回，失败也可能留下部分变化。界面刷新本地状态并提供 Source Control 核对入口，不自动重试，不把超时当作传输取消。创建 PR、合并 PR 和自动解决远端冲突仍不在本次范围内。
 
 冲突摘要可悬停、点击或用键盘打开，Escape 关闭。作者标签是两侧提交历史中该文件的最近提交作者，不是冲突行的精确归因；完整冲突仍需审查。
 
@@ -80,9 +86,9 @@ Push / Pull 按钮只打开原生面板，不直接执行传输。创建 PR、�
 
 ## 数据与隐私
 
-- 本插件不调用外部模型或上传工作区文件。GitHub 功能会在可信工作区中，以编辑器提供的会话向固定的 `https://api.github.com` 发出只读 GET 请求，包含仓库、分支和提交标识。授权使用 GitHub `repo` scope（用于访问私有仓库），令牌不会传给 Webview、写入配置或输出日志。
+- 本插件不调用外部模型。用户执行 Push、Sync 或 Publish 时，原生 Git 会按仓库配置传输提交对象；Fetch/Pull 会访问配置的远端。GitHub 查询功能单独使用编辑器会话向固定的 `https://api.github.com` 发出只读 GET 请求，包含仓库、分支和提交标识。查询授权使用 GitHub `repo` scope（用于访问私有仓库），令牌不会传给 Webview、写入配置或输出日志，也不会作为参数交给 Git 传输。
 - GitHub 请求拒绝重定向，限制为总计 10 秒及每次响应 2 MiB；外部响应先校验，再转换为界面数据。浏览器打开地址由宿主根据校验过的仓库和 PR 编号构造。工作区文件、认证令牌及远端原始错误不会进入这些链接。
-- 官方 Git 操作遵循宿主及仓库设置，可能运行已配置的 hooks。GitHub 查询不会执行 push、pull、创建或合并 PR。
+- 官方 Git 操作遵循宿主及仓库设置，可能运行已配置的 hooks 和错误处理器。共享操作锁只协调本扩展，不能锁住终端、其他扩展或原生流程内部的后续变化。GitHub 查询不会执行 push、pull、创建或合并 PR。
 - 冲突备份保存在本机扩展存储目录，包含文件绝对路径和完整原文，可能包含敏感信息。备份为明文，不自动过期，可通过清理命令删除。
 - 复制冲突只在用户点击后写入剪贴板，不自动发送到聊天。
 - 本插件对外部错误只显示受控摘要。编辑器内置 Git 的原生弹窗和日志由宿主管理。
@@ -94,13 +100,19 @@ Push / Pull 按钮只打开原生面板，不直接执行传输。创建 PR、�
 
 本地文本冲突处理限制为 180 KB，差异显示最多 180,000 个字符。超大文件、二进制及特殊文件类型应使用官方处理流程。无法验证关联的 Git 元数据布局会停止操作。
 
-远程同步、PR 写操作，以及 rebase、cherry-pick、revert 等完整流程，请使用编辑器内置源代码管理或其他相应工具。
+PR 写操作，以及 rebase、cherry-pick、revert 等完整流程，请使用编辑器内置源代码管理或其他相应工具。网络命令是对原生 SCM 的适配，不提供超出宿主的严格事务、自动回滚或可靠传输取消保证。
 
 ## 开发验证
 
 `npm test` 编译并运行本地 Git、Webview、消息协议及 GitHub 模拟响应测试。GitHub 测试不使用真实账号或网络。
 
-`npm run test:ui` 使用本机已安装的 Playwright / Chromium 运行真实浏览器回归（Playwright 的 Node.js 要求独立于扩展构建要求）。可用 `GENERATIVE_GIT_PLAYWRIGHT` 指向 Playwright 的 `index.mjs`，`PLAYWRIGHT_BROWSERS_PATH` 指向已有浏览器，`GENERATIVE_GIT_UI_FONT` 指向可选本地中文字体。脚本阻止所有页面网络请求，截图默认保存到同级 `.tmp/thread-ui-rewrite/`。真实编辑器认证弹窗和原生 Git 对话框仍需 Extension Host / 人工验证。
+`npm run test:ui` 使用本机已安装的 Playwright / Chromium 运行真实浏览器回归（Playwright 的 Node.js 要求独立于扩展构建要求）。可用 `GENERATIVE_GIT_PLAYWRIGHT` 指向 Playwright 的 `index.mjs`，`PLAYWRIGHT_BROWSERS_PATH` 指向已有浏览器，`GENERATIVE_GIT_CHROMIUM` 指向可选可执行文件，`GENERATIVE_GIT_UI_FONT` 指向可选本地中文字体。脚本阻止所有页面网络请求，截图默认保存到同级 `.tmp/thread-ui-rewrite/`。
+
+`npm run test:host` 需要 `VSCODE_EXECUTABLE` 指向独立桌面宿主，不能使用连接已有窗口的 remote CLI。脚本创建隔离 profile、双仓库、本地远端和临时验收扩展，Git 传输仅允许 file 协议；验证真实原生命令、取消、仓库定位和提交保护。标准 `--extensionTestsPath` 模式禁止弹窗，因此此脚本通过临时启动扩展测试真实确认交互。可人工处理确认框，或用 Node 22+ 设置 `GENERATIVE_GIT_HOST_CDP_PORT` 自动处理指定测试仓库的确认框；未知弹窗不会被自动批准。
+
+`GENERATIVE_GIT_HOST_ARTIFACTS` 可保存测试结果和日志。无图形环境时需自行提供虚拟显示；必要时仅对隔离测试设置 `GENERATIVE_GIT_HOST_NO_SANDBOX=1`。这些测试参数不进入产品代码。
+
+本轮已在 VS Code 1.85.0 和 1.143.0 实测五种原生网络动作的本地远端行为、确认取消及关闭仓库拒绝；1.143.0 同时通过签名、Sign-off 和禁止 post-commit 推送。真实 HTTPS/SSH 认证、Cursor 桌面交互仍需单独验收，不能用本地 file 远端结果代替。
 
 ## 许可
 

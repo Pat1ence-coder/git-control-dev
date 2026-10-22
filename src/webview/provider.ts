@@ -2,9 +2,10 @@ import { UserFacingError } from '../git/errors';
 import * as vscode from 'vscode';
 import { randomBytes } from 'node:crypto';
 import { GitService, describeGitError } from '../git/gitService';
-import { asHostMessage, type ToHost, type ToWebview } from '../shared/protocol';
+import { asHostMessage, type ToHost, type ToWebview, type WriteMessage, type WriteTicket } from '../shared/protocol';
 import { repositoryContext, sameContext, type RepositoryContext, type Snapshot, type PullRequestState } from '../shared/protocol';
 import { safePullRequestUrl } from '../git/github';
+import { runNativeGit } from '../git/nativeGitBridge';
 export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     private view?: vscode.WebviewView | vscode.WebviewPanel;
     private panel?: vscode.WebviewPanel;
@@ -12,6 +13,7 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
     private previewRef?: string;
     private current?: RepositoryContext;
     private remoteVersion = 0;
+    private writeTicket?: WriteTicket & { issuedAt: number };
     private remoteLink?: { context: RepositoryContext; url: string };
     private connecting = false;
     private queue: Promise<void> = Promise.resolve();
@@ -36,6 +38,7 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
     private attach(view: vscode.WebviewView | vscode.WebviewPanel): void {
         this.view = view;
         this.ready = false;
+        this.writeTicket = undefined;
         this.current = undefined;
         this.invalidateRemote();
         view.webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'dist'), vscode.Uri.joinPath(this.context.extensionUri, 'media')] };
@@ -58,7 +61,7 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
         const snapshot = await this.git.snapshot(this.previewRef);
         if (!view || view !== this.view) return;
         this.ready = true;
-        this.post({ type: 'hydrate', snapshot, notice: this.git.startupProblem });
+        this.post({ type: 'hydrate', snapshot: this.withWriteTicket(snapshot), notice: this.git.startupProblem });
         this.refreshRemote(snapshot);
     }
     private async pushSnapshot(_force: boolean): Promise<void> {
@@ -66,7 +69,7 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
         const view = this.view;
         const snapshot = await this.git.snapshot(this.previewRef);
         if (!this.ready || view !== this.view) return;
-        this.post({ type: 'snapshot', snapshot });
+        this.post({ type: 'snapshot', snapshot: this.withWriteTicket(snapshot) });
         this.refreshRemote(snapshot);
     }
     private invalidateRemote(): void {
@@ -98,24 +101,88 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
         await this.git.refresh();
         await this.enqueue(() => this.pushSnapshot(true));
     }
-    private async withLock(action: () => Promise<void>): Promise<void> {
-        if (this.operation.busy) {
-            this.post({ type: 'live-result', kind: 'error', text: '上一个 Git 操作还没结束，请稍后重试。' });
+    private withWriteTicket(snapshot: Snapshot | null): Snapshot | null {
+        this.writeTicket = undefined;
+        if (!snapshot) return null;
+        if (snapshot.preview || this.previewRef) return { ...snapshot, writeToken: undefined };
+        const writeToken = randomBytes(24).toString('hex');
+        this.writeTicket = { writeToken, context: repositoryContext(snapshot), issuedAt: Date.now() };
+        return { ...snapshot, writeToken };
+    }
+    private async handleWrite(message: WriteMessage): Promise<void> {
+        const view = this.view;
+        const reportError = (error: unknown) => {
+            const text = describeGitError(error);
+            if (message.type === 'commit-staged') this.post({ type: 'commit-result', ok: false, error: text });
+            else if (message.type === 'native-git') this.post({ type: 'native-git-result', requestToken: message.writeToken, context: message.context, action: message.action, kind: 'error', text });
+            else this.post({ type: 'live-result', kind: 'error', text });
+        };
+        if (this.operation.busy) { reportError(new UserFacingError('上一个 Git 操作还没结束，请稍后重试。')); return; }
+        const ticket = this.writeTicket;
+        const assertHost = () => {
+            if (!view || this.view !== view || !this.ready || this.previewRef || !vscode.workspace.isTrusted ||
+                !sameContext(this.current, message.context))
+                throw new UserFacingError('页面、仓库或分支状态已变化，请刷新后重新确认。');
+        };
+        try {
+            assertHost();
+            if (!ticket || ticket.writeToken !== message.writeToken || !sameContext(ticket.context, message.context) ||
+                Date.now() - ticket.issuedAt > 5 * 60_000)
+                throw new UserFacingError('操作请求已过期或已使用，请刷新后重新确认。');
+        } catch (e) {
+            reportError(e);
+            await this.enqueue(() => this.pushSnapshot(true));
             return;
         }
+        // Consume synchronously, before any await; replays cannot start another operation.
+        this.writeTicket = undefined;
         this.operation.busy = true;
+        let result: ToWebview | undefined;
         try {
-            await action();
-        }
-        catch (e) {
+            const guard = await this.git.prepareWrite(message.context, assertHost);
+            switch (message.type) {
+                case 'native-git': {
+                    const native = await runNativeGit(message.action, guard);
+                    result = { type: 'native-git-result', requestToken: message.writeToken, context: message.context, action: message.action, ...native };
+                    break;
+                }
+                case 'merge': {
+                    const merged = await this.git.merge(message.ref, guard, message.refHash);
+                    result = { type: 'live-result', kind: merged.conflict ? 'conflict' : 'clean', text: merged.conflict ? 'Git 停在冲突上。请选择一种方式解决。' : '合并完成，没有冲突。' };
+                    break;
+                }
+                case 'abort-merge':
+                    await this.git.abortMerge(guard);
+                    result = { type: 'live-result', kind: 'aborted', text: '合并已中止。' }; break;
+                case 'resolve':
+                    result = { type: 'live-result', kind: 'resolved', text: await this.git.resolve(message.path, message.strategy, guard) }; break;
+                case 'stage':
+                    await this.git.stage(message.path, guard);
+                    result = { type: 'live-result', kind: 'resolved', text: '当前文件已暂存。' }; break;
+                case 'stage-working-change':
+                    await this.git.stageWorkingChange(message.path, message.repoId, guard);
+                    result = { type: 'live-result', kind: 'staged', text: `${message.path} 已暂存。` }; break;
+                case 'native-stage-conflicts': {
+                    const { remaining } = await this.git.stageConflictsNative(guard);
+                    result = { type: 'live-result', kind: remaining ? 'conflict' : 'resolved', text: remaining ? `官方流程已返回，仍有 ${remaining} 个冲突；已完成的暂存会保留。` : '官方冲突暂存流程已完成，请审查实际暂存结果。' }; break;
+                }
+                case 'suggest-commit': await this.git.suggestCommitMessage(guard); break;
+                case 'commit-staged': {
+                    const hash = await this.git.commitStaged(message.repoId, message.token, message.message, guard);
+                    result = { type: 'commit-result', ok: true, hash }; break;
+                }
+            }
+        } catch (e) {
+            if (this.view === view) reportError(e);
+        } finally {
+            // Snapshot failures are reported separately, never converted into a failed write.
             await this.enqueue(() => this.pushSnapshot(true));
-            this.post({ type: 'live-result', kind: 'error', text: describeGitError(e) });
-        }
-        finally {
             this.operation.busy = false;
         }
+        if (result && this.view === view) this.post(result);
     }
     private async onMessage(message: ToHost): Promise<void> {
+        if ('writeToken' in message) { await this.handleWrite(message); return; }
         if (message.type === 'ready') {
             await this.enqueue(() => this.hydrate());
             return;
@@ -140,12 +207,16 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
             return;
         }
         if (message.type === 'preview-branch') {
+            if (this.operation.busy) throw new UserFacingError('Git 操作进行中，请稍后切换预览。');
+            this.writeTicket = undefined;
             this.invalidateRemote();
             this.previewRef = message.ref;
             await this.enqueue(() => this.pushSnapshot(true));
             return;
         }
         if (message.type === 'preview-current') {
+            if (this.operation.busy) throw new UserFacingError('Git 操作进行中，请稍后切换预览。');
+            this.writeTicket = undefined;
             this.invalidateRemote();
             this.previewRef = undefined;
             await this.enqueue(() => this.pushSnapshot(true));
@@ -177,6 +248,7 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
                 return;
             }
             case 'select-repo':
+                this.writeTicket = undefined;
                 if (this.operation.busy)
                     throw new UserFacingError('Git 操作进行中，请稍候再切换仓库。');
                 this.previewRef = undefined;
@@ -190,27 +262,9 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
             case 'open-working-change':
                 await this.git.openWorkingChange(message.path, message.repoId);
                 break;
-            case 'stage-working-change':
-                await this.withLock(async () => {
-                    await this.git.stageWorkingChange(message.path, message.repoId);
-                    await this.enqueue(() => this.pushSnapshot(true));
-                    this.post({ type: 'live-result', kind: 'staged', text: `${message.path} 已暂存。` });
-                });
-                break;
             case 'open-conflict-diff':
             case 'open-merge-editor':
                 await this.git.openConflict(message.path, message.type === 'open-merge-editor');
-                break;
-            case 'native-stage-conflicts':
-                await this.withLock(async () => {
-                    const { remaining } = await this.git.stageConflictsNative();
-                    await this.enqueue(() => this.pushSnapshot(true));
-                    this.post({ type: 'live-result', kind: remaining ? 'conflict' : 'resolved',
-                        text: remaining ? `官方流程已返回，仍有 ${remaining} 个冲突；已完成的暂存会保留。` : '官方冲突暂存流程已完成，请审查实际暂存结果。' });
-                });
-                break;
-            case 'suggest-commit':
-                await this.git.suggestCommitMessage();
                 break;
             case 'inspect-commit': {
                 try {
@@ -230,33 +284,6 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
                     this.post({ type: 'staged-review', requestId: message.requestId, error: describeGitError(e) });
                 }
                 break;
-            case 'commit-staged':
-                if (this.operation.busy) {
-                    this.post({ type: 'commit-result', ok: false, error: '另一个 Git 操作正在进行，请稍后重新加载审查。' });
-                    break;
-                }
-                this.operation.busy = true;
-                try {
-                    const hash = await this.git.commitStaged(message.repoId, message.token, message.message);
-                    await this.enqueue(() => this.pushSnapshot(true));
-                    this.post({ type: 'commit-result', ok: true, hash });
-                } catch (e) {
-                    await this.enqueue(() => this.pushSnapshot(true));
-                    this.post({ type: 'commit-result', ok: false, error: describeGitError(e) });
-                } finally { this.operation.busy = false; }
-                break;
-            case 'merge':
-                await this.withLock(async () => { const result = await this.git.merge(message.ref); await this.enqueue(() => this.pushSnapshot(true)); this.post({ type: 'live-result', kind: result.conflict ? 'conflict' : 'clean', text: result.conflict ? 'Git 停在冲突上。请选择一种方式解决。' : '合并完成，没有冲突。' }); });
-                break;
-            case 'abort-merge':
-                await this.withLock(async () => { await this.git.abortMerge(); await this.enqueue(() => this.pushSnapshot(true)); this.post({ type: 'live-result', kind: 'aborted', text: '合并已中止。' }); });
-                break;
-            case 'resolve':
-                await this.withLock(async () => { const text = await this.git.resolve(message.path, message.strategy); await this.enqueue(() => this.pushSnapshot(true)); this.post({ type: 'live-result', kind: 'resolved', text }); });
-                break;
-            case 'stage':
-                await this.withLock(async () => { await this.git.stage(message.path); await this.enqueue(() => this.pushSnapshot(true)); this.post({ type: 'live-result', kind: 'resolved', text: '当前文件已暂存。' }); });
-                break;
         }
     }
     private html(webview: vscode.Webview): string {
@@ -265,5 +292,5 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
         const script = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview.js'));
         return `<!DOCTYPE html><html lang="zh-Hans"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${css}"><title>Generative Git</title></head><body><div id="app"></div><script nonce="${nonce}" src="${script}"></script></body></html>`;
     }
-    dispose(): void { this.ready = false; this.view = undefined; this.invalidateRemote(); this.current = undefined; this.subscriptions.forEach(d => d.dispose()); }
+    dispose(): void { this.writeTicket = undefined; this.ready = false; this.view = undefined; this.invalidateRemote(); this.current = undefined; this.subscriptions.forEach(d => d.dispose()); }
 }

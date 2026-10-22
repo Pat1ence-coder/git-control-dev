@@ -6,6 +6,7 @@ export interface Ref {
     remote?: string;
     ahead?: number;
     behind?: number;
+    upstream?: { remote: string; name: string; commit?: string };
 }
 export interface Commit {
     hash: string;
@@ -74,4 +75,10 @@ export interface GitExtension {
     enabled: boolean;
     onDidChangeEnablement: Event<boolean>;
     getAPI(version: 1): GitAPI;
+}
+/** Host-created guard; never constructed from a webview message. */
+export interface WriteGuard {
+    readonly repo: Repository;
+    check(): Promise<void>;
+    assertCurrent(): void;
 }

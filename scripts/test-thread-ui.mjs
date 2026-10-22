@@ -9,13 +9,14 @@ const { chromium } = await import(process.env.GENERATIVE_GIT_PLAYWRIGHT || 'play
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const artifacts = path.resolve(process.env.GENERATIVE_GIT_UI_ARTIFACTS || path.join(root, '../.tmp/thread-ui-rewrite'));
 await mkdir(artifacts, { recursive: true });
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({ headless: true, executablePath: process.env.GENERATIVE_GIT_CHROMIUM });
 const errors = [], requests = [];
 const page = await browser.newPage({ viewport: { width: 1200, height: 1000 } });
 page.on('pageerror', error => errors.push(error.message));
 await page.route('**/*', route => { requests.push(route.request().url()); return route.abort(); });
 const hash = 'a'.repeat(40), other = 'b'.repeat(40);
 const snapshot = {
+    writeToken: 'e'.repeat(48), nativeGit: { hasHead: true, hasUpstream: true },
     repoId: '/fixture', repoName: 'acme-webapp', repositories: [{ id: '/fixture', name: 'acme-webapp' }],
     headName: 'feat/session-refresh', headHash: hash, branches: ['main', 'feat/session-refresh'],
     conflicts: [], workingTreeCount: 3, stagedCount: 1, mergeHead: false, rebasing: false, canMerge: true, canAbort: true,
@@ -57,10 +58,12 @@ try {
     assert.equal(rowHeight, 30);
     assert.equal(await page.locator('.commit-row').nth(1).evaluate(el => getComputedStyle(el).animationDelay), '0.016s');
     await page.locator('[data-action="native-push"]').click();
-    assert.match(await page.locator('#native-confirm').innerText(), /领先上游 2/);
+    assert.match(await page.locator('#native-confirm').innerText(), /原生 Git/);
     await page.screenshot({ path: path.join(artifacts, 'thread-handoff.png'), animations: 'disabled' });
     await page.locator('[data-action="native-go"]').click();
-    assert.equal(await page.evaluate(() => window.sent.at(-1).type), 'open-scm');
+    assert.equal(await page.evaluate(() => window.sent.at(-1).type), 'native-git');
+    assert.equal(await page.evaluate(() => window.sent.at(-1).action), 'push');
+    await send({ type: 'native-git-result', action: 'push', context, requestToken: snapshot.writeToken, kind: 'returned', text: '原生 Push 流程已返回，请核对状态。' });
     await page.locator('#quick-message').press('Enter');
     assert.equal(await page.evaluate(() => window.sent.at(-1).type), 'review-staged');
     const requestId = await page.evaluate(() => window.sent.at(-1).requestId);

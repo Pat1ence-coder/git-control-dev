@@ -2,6 +2,8 @@ import './launcher';
 import './webview';
 import './provider';
 import './native-git';
+import './native-bridge';
+import './write-safety';
 import './security';
 import './github';
 import './remote-provider';
@@ -107,7 +109,7 @@ test('untrusted paths, refs and messages are rejected', () => {
     assert.equal(asHostMessage({ type: 'copy', text: 'a'.repeat(30000) })?.type, 'copy');
     assert.equal(asHostMessage({ type: 'commit-staged', repoId: '/repo', token: 'invalid', message: 'commit' }), undefined);
     assert.equal(asHostMessage({ type: 'commit-staged', repoId: '/repo', token: 'a'.repeat(64), message: 'm'.repeat(20001) }), undefined);
-    assert.equal(asHostMessage({ type: 'commit-staged', repoId: '/repo', token: 'a'.repeat(64), message: 'reviewed commit' })?.type, 'commit-staged');
+    assert.equal(asHostMessage({ type: 'commit-staged', repoId: '/repo', token: 'a'.repeat(64), message: 'reviewed commit', context: { repoId: '/repo', headName: 'main' }, writeToken: 'b'.repeat(48) })?.type, 'commit-staged');
 });
 test('rendered Git strings are escaped and unicode clipping preserves codepoints', () => {
     assert.equal(esc('<script>"&'), '&lt;script&gt;&quot;&amp;');
@@ -230,7 +232,7 @@ test('GitService: real conflicts, resolution/staging, history diff, abort and wo
     };
     await repo.status();
     const noEvent = new host.EventEmitter<any>();
-    host.extensions.getExtension = () => ({ isActive: true, exports: { enabled: true, onDidChangeEnablement: noEvent.event, getAPI: () => ({ state: 'initialized', repositories: [repo], onDidChangeState: noEvent.event, onDidOpenRepository: noEvent.event, onDidCloseRepository: noEvent.event }) } });
+    host.extensions.getExtension = () => ({ isActive: true, exports: { enabled: true, onDidChangeEnablement: noEvent.event, getAPI: () => ({ state: 'initialized', repositories: [repo], getRepository: () => repo, onDidChangeState: noEvent.event, onDidOpenRepository: noEvent.event, onDidCloseRepository: noEvent.event }) } });
     const backups = await fs.mkdtemp(path.join(os.tmpdir(), 'generative-git-backups-'));
     const safety = new ResolutionSafety(uri(backups));
     const service = new GitService({ get: () => undefined, update: async () => { }, keys: () => [] } as any, { appendLine: () => { } } as any, safety);

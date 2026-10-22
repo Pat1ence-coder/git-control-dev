@@ -123,21 +123,28 @@ test('remote state is escaped and tied to repository, branch and HEAD; preview h
     assert.equal(ui.get('app').dataset.quick, 'false');
 });
 
-test('Push/Pull buttons only hand off to SCM after confirmation; stale confirmations do nothing', () => {
+test('SCM actions carry host context and token; stale confirmations do nothing', () => {
     const ui = harness();
     const s = makeSnapshot({ branchList: [{ name: 'main', ref: 'refs/heads/main', local: true, current: true, ahead: 2, behind: 1 }] });
     ui.message({ type: 'hydrate', snapshot: s });
     const before = ui.posted.length;
     ui.click('native-push'); assert.equal(ui.posted.length, before);
-    assert.match(ui.get('native-confirm').innerHTML, /领先上游 2 个提交/);
+    assert.match(ui.get('native-confirm').innerHTML, /原生 Git/);
     ui.click('native-cancel'); ui.click('native-go'); assert.equal(ui.posted.length, before);
-    ui.click('native-pull'); ui.click('native-go'); assert.equal(ui.posted.at(-1).type, 'open-scm');
+    ui.click('native-pull'); ui.click('native-go'); assert.equal(ui.posted.at(-1).type, 'native-git');
+    const request = ui.posted.at(-1);
+    assert.equal(request.action, 'pull'); assert.equal(request.writeToken, s.writeToken);
+    ui.click('native-go'); assert.equal(ui.posted.at(-1), request);
+    ui.message({ type: 'native-git-result', action: 'pull', context: request.context, requestToken: request.writeToken, kind: 'returned', text: '原生流程已返回，请核对状态。' });
+    assert.doesNotMatch(ui.get('task-notice').innerHTML, /成功/);
     ui.click('native-push');
     ui.message({ type: 'snapshot', snapshot: { ...s, headHash: 'c'.repeat(40) } });
     const count = ui.posted.length; ui.click('native-go'); assert.equal(ui.posted.length, count);
     assert.ok(!ui.posted.some(m => ['push', 'pull', 'sync'].includes(m.type)));
 });
 const makeSnapshot = (overrides: Partial<Snapshot> = {}): Snapshot => ({
+    writeToken: 'e'.repeat(48), nativeGit: { hasHead: true, hasUpstream: true },
+    branchList: [{ name: 'main', ref: 'refs/heads/main', local: true, current: true, commit: 'a'.repeat(40) }, { name: 'feature', ref: 'refs/heads/feature', local: true, current: false, commit: 'b'.repeat(40) }],
     repoId: '/repo', repoName: 'repo', repositories: [{ id: '/repo', name: 'repo' }], headName: 'main', headHash: 'a1f3c09',
     branches: ['main'], conflicts: [], workingTreeCount: 0, workingTreeFiles: [], stagedCount: 0,
     mergeHead: false, rebasing: false, canMerge: true, canAbort: true, graph: fixtureGraph(), ...overrides
