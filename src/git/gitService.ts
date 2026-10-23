@@ -292,6 +292,25 @@ export class GitService implements vscode.Disposable {
             await vscode.commands.executeCommand('git.openChange', change.uri);
         }
     }
+    async stageAll(guard?: WriteGuard): Promise<number> {
+        const write = guard ?? await this.prepareWrite(), repo = write.repo;
+        await repo.status();
+        const changes = this.workingChanges(repo);
+        if (!changes.length) throw new UserFacingError('没有可暂存的未暂存更改。');
+        this.assertSaved(repo);
+        const fingerprint = changes.map(change => `${change.uri.fsPath}\0${change.status}`).sort().join('\n');
+        await write.check();
+        this.assertSaved(repo);
+        if (fingerprint !== this.workingChanges(repo).map(change => `${change.uri.fsPath}\0${change.status}`).sort().join('\n'))
+            throw new UserFacingError('未暂存更改已变化，请刷新后重新操作。');
+        write.assertCurrent();
+        // Add the exact current resources, including deletions and untracked files.
+        // Conflicts are excluded from workingChanges and must use the conflict flow.
+        await write.repo.add(changes.map(change => change.uri.fsPath));
+        this.reviewTokens.delete(repo.rootUri.fsPath);
+        await repo.status();
+        return changes.length;
+    }
     async stageWorkingChange(relative: string, repoId: string, guard?: WriteGuard): Promise<void> {
         const write = guard ?? await this.prepareWrite();
         const { repo, change } = await this.workingChange(relative, repoId);

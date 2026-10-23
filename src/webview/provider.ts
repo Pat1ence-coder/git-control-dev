@@ -162,6 +162,10 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
                 case 'stage-working-change':
                     await this.git.stageWorkingChange(message.path, message.repoId, guard);
                     result = { type: 'live-result', kind: 'staged', text: `${message.path} 已暂存。` }; break;
+                case 'stage-all': {
+                    const count = await this.git.stageAll(guard);
+                    result = { type: 'live-result', kind: 'staged', text: `已暂存 ${count} 个未暂存文件。` }; break;
+                }
                 case 'native-stage-conflicts': {
                     const { remaining } = await this.git.stageConflictsNative(guard);
                     result = { type: 'live-result', kind: remaining ? 'conflict' : 'resolved', text: remaining ? `官方流程已返回，仍有 ${remaining} 个冲突；已完成的暂存会保留。` : '官方冲突暂存流程已完成，请审查实际暂存结果。' }; break;

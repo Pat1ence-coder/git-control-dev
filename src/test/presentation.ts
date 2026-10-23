@@ -15,6 +15,7 @@ const overview = { kind: 'overview' as const };
 test('presentation keeps real local operation failures and previews ahead of remote PR success', () => {
     const input = { phase: 'idle', snapshot, live: overview, pullRequest: pr };
     assert.equal(presentTask(input).status.label, 'Merged');
+    assert.match(presentTask(input).narrative, /PR #1 已合并/);
     assert.equal(presentTask({ ...input, phase: 'committing' }).status.label, '提交中');
     assert.equal(presentTask({ ...input, phase: 'error', live: { kind: 'error', text: 'fail' } }).status.label, '需要处理');
     const preview = presentTask({ ...input, snapshot: { ...snapshot, preview: { name: 'other', ref: 'refs/heads/other', graph: snapshot.graph } } });

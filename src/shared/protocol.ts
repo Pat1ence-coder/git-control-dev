@@ -133,6 +133,8 @@ export type WriteAction = {
 } | {
     type: 'stage-working-change'; repoId: string; path: string;
 } | {
+    type: 'stage-all';
+} | {
     type: 'commit-staged'; repoId: string; token: string; message: string;
 } | {
     type: 'native-git'; action: NativeGitAction;
@@ -232,13 +234,13 @@ export function asHostMessage(value: unknown): ToHost | undefined {
         return;
     const m = value as Record<string, unknown>;
     const str = (key: string, max = 4096) => typeof m[key] === 'string' && (m[key] as string).length > 0 && (m[key] as string).length <= max;
-    const writeTypes = ['merge', 'resolve', 'stage', 'stage-working-change', 'commit-staged', 'abort-merge', 'native-stage-conflicts', 'suggest-commit', 'native-git'];
+    const writeTypes = ['merge', 'resolve', 'stage', 'stage-working-change', 'stage-all', 'commit-staged', 'abort-merge', 'native-stage-conflicts', 'suggest-commit', 'native-git'];
     if (typeof m.type === 'string' && writeTypes.includes(m.type)) {
         const context = parseContext(m.context);
         if (!context || typeof m.writeToken !== 'string' || !/^[a-f0-9]{48}$/.test(m.writeToken)) return;
         const ticket = { context, writeToken: m.writeToken };
         switch (m.type) {
-            case 'abort-merge': case 'native-stage-conflicts': case 'suggest-commit': return { type: m.type, ...ticket };
+            case 'abort-merge': case 'native-stage-conflicts': case 'stage-all': case 'suggest-commit': return { type: m.type, ...ticket };
             case 'merge':
                 if (str('ref', 200) && typeof m.refHash === 'string' && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(m.refHash))
                     return { type: m.type, ref: m.ref as string, refHash: m.refHash, ...ticket };

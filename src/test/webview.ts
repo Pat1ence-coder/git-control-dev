@@ -347,3 +347,22 @@ test('empty repository offers Source Control instead of a demo entry', () => {
     assert.match(ui.get('task-controls').innerHTML, /打开 Source Control/);
     assert.ok(!ui.get('task-controls').innerHTML.includes('运行演示'));
 });
+
+test('webview: stage all sends one guarded write for all unstaged changes', () => {
+    const ui = harness();
+    const snapshot = makeSnapshot({
+        workingTreeCount: 2,
+        workingTreeFiles: [
+            { path: 'src/edit.ts', status: '已修改', untracked: false },
+            { path: 'new.txt', status: '未跟踪', untracked: true }
+        ]
+    });
+    ui.message({ type: 'hydrate', snapshot });
+    assert.match(ui.get('working-changes').innerHTML, /全部暂存/);
+    ui.click('stage-all');
+    const request = ui.posted.at(-1);
+    assert.equal(request.type, 'stage-all');
+    assert.equal(request.writeToken, snapshot.writeToken);
+    assert.equal(request.context.repoId, snapshot.repoId);
+    assert.equal(ui.posted.filter(m => m.type === 'stage-all').length, 1, 'one guarded stage-all request');
+});

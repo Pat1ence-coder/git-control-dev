@@ -18,17 +18,25 @@ const hash = 'a'.repeat(40), other = 'b'.repeat(40);
 const snapshot = {
     writeToken: 'e'.repeat(48), nativeGit: { hasHead: true, hasUpstream: true },
     repoId: '/fixture', repoName: 'acme-webapp', repositories: [{ id: '/fixture', name: 'acme-webapp' }],
-    headName: 'feat/session-refresh', headHash: hash, branches: ['main', 'feat/session-refresh'],
+    headName: 'feat/session-refresh', headHash: hash, branches: ['main', 'feat/session-refresh', 'feat/session-keys'],
     conflicts: [], workingTreeCount: 3, stagedCount: 1, mergeHead: false, rebasing: false, canMerge: true, canAbort: true,
     workingTreeFiles: ['src/auth/middleware.ts', 'src/session/refresh.ts', 'tests/session.test.ts'].map((p, i) => ({ path: p, status: i === 2 ? '未跟踪' : '已修改', untracked: i === 2 })),
     branchList: [{ name: 'feat/session-refresh', ref: 'refs/heads/feat/session-refresh', local: true, current: true, ahead: 2, behind: 1 }],
     graph: { laneCount: 2,
         nodes: ['Refresh sessions in the auth middleware', 'Add session refresh tests', 'Read sessions with the current key', 'Rotate session keys', 'Refresh sessions near expiry', 'Read session expiry from the token'].map((title, i) => ({
-            id: i === 0 ? hash : `${i}`.repeat(40), hash: i === 0 ? hash.slice(0, 7) : `${i}`.repeat(7), title, lane: i === 2 || i === 3 ? 1 : 0,
-            row: i, badges: i === 0 ? ['feat/session-refresh'] : i === 2 ? ['main'] : [], role: 'commit', tip: i === 0,
+            id: i === 0 ? hash : `${i}`.repeat(40), hash: i === 0 ? hash.slice(0, 7) : `${i}`.repeat(7), title, lane: i === 3 || i === 4 ? 1 : 0,
+            row: i, badges: i === 0 ? ['feat/session-refresh'] : i === 2 ? ['main'] : i === 3 || i === 4 ? ['feat/session-keys'] : [], role: 'commit', tip: i === 0,
             author: i % 2 ? 'Lena' : 'You', authorDate: new Date(Date.now() - (i + 1) * 60_000).toISOString()
         })),
-        edges: Array.from({ length: 5 }, (_, i) => ({ id: `edge-${i}`, from: i === 0 ? hash : `${i}`.repeat(40), to: `${i + 1}`.repeat(40), style: 'solid' }))
+        // Preview fixture must stay a coherent DAG: a lane change needs a fork/merge edge.
+        // A bare lane change draws a meaningless S-curve in the graph.
+        edges: [
+            { id: 'edge-0', from: hash, to: '1'.repeat(40), style: 'solid' },
+            { id: 'edge-1', from: '1'.repeat(40), to: '2'.repeat(40), style: 'solid' },
+            { id: 'edge-2', from: '2'.repeat(40), to: '3'.repeat(40), style: 'pending' },
+            { id: 'edge-3', from: '3'.repeat(40), to: '4'.repeat(40), style: 'solid' },
+            { id: 'edge-4', from: '2'.repeat(40), to: '5'.repeat(40), style: 'solid' }
+        ]
     }
 };
 const context = { repoId: snapshot.repoId, headName: snapshot.headName, headHash: hash };

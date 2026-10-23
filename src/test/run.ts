@@ -340,6 +340,26 @@ test('GitService: real conflicts, resolution/staging, history diff, abort and wo
                 await repo.status();
             }
         });
+        await t.test('stage all stages every current unstaged file without creating a commit', async () => {
+            const extra = 'stage-all <&>.txt';
+            const head = git('rev-parse', 'HEAD');
+            try {
+                await fs.writeFile(path.join(dir, 'file.ts'), 'stage all modified\n');
+                await fs.writeFile(path.join(dir, extra), 'stage all new\n');
+                await repo.status();
+                assert.equal((await service.snapshot())?.workingTreeCount, 2);
+                assert.equal(await service.stageAll(), 2);
+                const staged = git('diff', '--cached', '--name-only').split('\n').filter(Boolean);
+                assert.ok(staged.includes('file.ts'));
+                assert.ok(staged.includes(extra));
+                assert.equal((await service.snapshot())?.workingTreeCount, 0);
+                assert.equal(git('rev-parse', 'HEAD'), head, 'stage all must not commit');
+            } finally {
+                git('reset', '--hard', 'HEAD');
+                await fs.rm(path.join(dir, extra), { force: true });
+                await repo.status();
+            }
+        });
         await t.test('conflict detection and incoming writes to the actual Git index', async () => {
             assert.equal((await service.merge('feature')).conflict, true);
             const log = repo.log;

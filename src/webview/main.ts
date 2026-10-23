@@ -28,7 +28,7 @@ const app: {
     detailOpen: false, detailLoading: false, reviewOpen: false, review: freshReview(), requestId: 0, conflictsOpen: false, peekOpen: false, branchPickerOpen: false
 };
 const root = document.getElementById('app')!;
-root.innerHTML = `<header id="toolbar"></header><main class="task-workspace"><div id="task-context"></div><article id="task-card" class="task-card" aria-label="Git 任务"><header id="task-heading"></header><div id="branch-popover"></div><div id="graph"></div><div id="pr-checks"></div><div id="task-notice"></div><section id="stage" aria-label="任务详情"></section><div id="task-controls" class="task-controls"></div></article><p id="task-explanation"></p><div id="task-meta"></div><section id="native-confirm" aria-label="原生远端操作确认"></section><section id="working-changes" aria-label="未暂存更改"></section><section id="quick-composer" class="quick-composer" aria-label="快速提交"><label for="quick-message" class="sr-only">提交说明</label><textarea id="quick-message" rows="1" maxlength="20000" placeholder="写提交说明，或直接审查暂存区…"></textarea><div class="quick-tools"><div id="quick-context"></div><span class="quick-hint">本地操作，不自动推送</span>${button('quick-review', '审查并提交', 'primary')}</div></section></main><footer id="status-bar"></footer><div id="announcer" class="sr-only" aria-live="polite"></div>`;
+root.innerHTML = `<header id="toolbar"></header><main class="task-workspace"><div id="task-context"></div><article id="task-card" class="task-card" aria-label="Git 任务"><header id="task-heading"></header><div id="branch-popover"></div><div id="graph"></div><div id="pr-checks"></div><div id="task-notice"></div><section id="stage" aria-label="任务详情"></section><div id="task-controls" class="task-controls"></div><section id="working-changes" aria-label="未暂存更改"></section></article><p id="task-explanation"></p><div id="task-meta"></div><section id="native-confirm" aria-label="原生远端操作确认"></section><section id="quick-composer" class="quick-composer" aria-label="快速提交"><label for="quick-message" class="sr-only">提交说明</label><textarea id="quick-message" rows="1" maxlength="20000" placeholder="写提交说明，或直接审查暂存区…"></textarea><div class="quick-tools"><div id="quick-context"></div><span class="quick-hint">本地操作，不自动推送</span>${button('quick-review', '审查并提交', 'primary')}</div></section></main><footer id="status-bar"></footer><div id="announcer" class="sr-only" aria-live="polite"></div>`;
 const htmlCache = new Map<string, string>();
 let lastPhase = '';
 const post = (message: ToHost) => { api?.postMessage(message); };
@@ -119,10 +119,28 @@ function render(): void {
     const chips = presentation.chips.map(c => `<span class="meta-pill ${c.tone}"><i class="meta-dot" aria-hidden="true"></i>${esc(c.label)}</span>`).join('');
     const branch = preview ? undefined : app.snapshot?.branchList?.find(b => b.current);
     const native = preview ? undefined : app.snapshot?.nativeGit;
-    const remoteActions = native ? [
-        ...(native.hasHead ? [native.hasUpstream ? 'push' : 'publish', 'pull', ...(native.hasUpstream ? ['sync'] : [])] : []), 'fetch'
-    ].map(kind => button(`native-${kind}`, `${kind === 'push' && branch?.ahead ? `↑${branch.ahead} ` : kind === 'pull' && branch?.behind ? `↓${branch.behind} ` : ''}${nativeGitLabels[kind as NativeGitAction]}`, 'remote-action', disabled)).join('') : '';
-    update('task-meta', chips + remoteActions + stats);
+    const remoteKinds: NativeGitAction[] = [];
+    if (native) {
+        if (native.hasHead) {
+            remoteKinds.push(native.hasUpstream ? 'push' : 'publish', 'pull');
+            if (native.hasUpstream) remoteKinds.push('sync');
+        }
+        remoteKinds.push('fetch');
+    }
+    const primaryRemote: NativeGitAction | undefined = !native || !native.hasHead ? undefined
+        : !native.hasUpstream ? 'publish'
+        : branch?.ahead ? 'push'
+        : branch?.behind ? 'pull'
+        : undefined;
+    const remoteLabel = (kind: NativeGitAction) =>
+        `${kind === 'push' && branch?.ahead ? `↑${branch.ahead} ` : kind === 'pull' && branch?.behind ? `↓${branch.behind} ` : ''}${nativeGitLabels[kind]}`;
+    const remoteButton = (kind: NativeGitAction) => button(`native-${kind}`, remoteLabel(kind), 'remote-action', disabled);
+    const moreRemote = remoteKinds.filter(kind => kind !== primaryRemote);
+    const remoteActions = primaryRemote ? remoteButton(primaryRemote) : '';
+    const remoteMore = moreRemote.length
+        ? `<details class="remote-more"><summary>更多</summary><div class="remote-menu">${moreRemote.map(remoteButton).join('')}</div></details>`
+        : '';
+    update('task-meta', chips + remoteActions + remoteMore + stats);
     const handoff = app.handoff;
     update('native-confirm', app.nativePending ? `<div class="native-confirm" role="status"><p>正在运行原生 ${nativeGitLabels[app.nativePending.action]} 流程，请查看编辑器提示…</p></div>` : handoff ? `<div class="native-confirm"><div><strong>${nativeGitLabels[handoff.kind]} 由编辑器原生 Git 完成</strong><p>将在当前仓库运行对应操作，遵循原生 Git 配置与确认流程。${handoff.kind === 'sync' ? 'Sync 会拉取并推送。' : ''}</p></div><div class="actions">${button('native-go', `继续 ${nativeGitLabels[handoff.kind]}`, 'primary', disabled)}${button('native-cancel', '取消', 'text-button')}</div></div>` : app.nativeFallback ? `<div class="native-confirm">${button('open-scm', '在 Source Control 中核对', 'text-button')}</div>` : '');
     root.dataset.quick = app.snapshot && !preview && !app.reviewOpen && !app.detailOpen && !['confirm', 'abort-confirm', 'error'].includes(app.live.kind) ? 'true' : 'false';
@@ -238,6 +256,12 @@ function action(name: string, element: HTMLElement): void {
             if (element.dataset.path && app.snapshot) {
                 closeDetail(); resetReview(); app.live = { kind: 'resolving', path: element.dataset.path };
                 postWrite({ type: 'stage-working-change', path: element.dataset.path, repoId: app.snapshot.repoId }); render();
+            }
+            break;
+        case 'stage-all':
+            if (app.snapshot?.workingTreeCount) {
+                closeDetail(); resetReview(); app.live = { kind: 'resolving', path: '全部未暂存更改' };
+                postWrite({ type: 'stage-all' }); render();
             }
             break;
         case 'open-conflict-diff': case 'open-merge-editor': {

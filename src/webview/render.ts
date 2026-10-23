@@ -61,7 +61,7 @@ export function renderGraph(graph: GraphModel, reduced: boolean, selected?: stri
     }).join('');
     return `<div class="commit-tree" style="--rail-width:${railWidth}px;--tree-height:${height}px" role="group" aria-label="提交与分支图，点击提交查看变更"><svg class="tree-rail" width="${railWidth}" height="${height}" viewBox="0 0 ${railWidth} ${height}" aria-hidden="true">${paths}${dots}</svg><div class="commit-list">${rows}</div></div>`;
 }
-export function icon(name: 'branch' | 'file' | 'arrow' | 'check' | 'expand' | 'refresh' | 'commit' | 'warning' | 'close' | 'chevron'): string {
+export function icon(name: 'branch' | 'file' | 'arrow' | 'external' | 'check' | 'expand' | 'refresh' | 'commit' | 'warning' | 'close' | 'chevron'): string {
     const paths = {
         warning: '<path d="m10 3 8 14H2zM10 8v4m0 2v.1"/>',
         close: '<path d="m5 5 10 10M15 5 5 15"/>',
@@ -69,6 +69,7 @@ export function icon(name: 'branch' | 'file' | 'arrow' | 'check' | 'expand' | 'r
         branch: '<circle cx="5" cy="4" r="2"/><circle cx="15" cy="6" r="2"/><circle cx="5" cy="16" r="2"/><path d="M5 6v8m10-6c0 6-10 2-10 6"/>',
         file: '<path d="M11 2H4v16h12V7zM11 2v5h5M7 11h6m-6 3h4"/>',
         arrow: '<path d="M4 10h12m-5-5 5 5-5 5"/>',
+        external: '<path d="M11 4h5v5m0-5-8 8M6 5H4v11h11v-2"/>',
         check: '<path d="m4 10 4 4 8-8"/>',
         expand: '<path d="M12 3h5v5m0-5-7 7M8 17H3v-5m0 5 7-7"/>',
         refresh: '<path d="M16 7a6 6 0 1 0 0 6M16 3v4h-4"/>',
@@ -111,7 +112,7 @@ export function renderWorkingTree(snapshot: Snapshot, disabled: boolean): string
     const files = snapshot.workingTreeFiles;
     if (!files) return snapshot.workingTreeCount
         ? `<div class="notice">未暂存更改列表尚未加载。${button('refresh', '刷新', 'text-button')}</div>` : '';
-    return `<div class="working-changes"><header><h3>未暂存更改<span class="working-count">${files.length}</span></h3></header>${files.length
+    return `<div class="working-changes"><header><h3>未暂存更改<span class="working-count">${files.length}</span></h3>${files.length ? button('stage-all', '全部暂存', 'text-button', `${disabled ? 'disabled ' : ''}title="暂存全部未暂存文件（不含冲突）" aria-label="全部暂存未暂存文件，不包含冲突"`) : ''}</header>${files.length
         ? `<ul class="working-list">${files.map(file => {
             const [directory, name] = splitWorkingPath(file.path);
             const [mark, tone] = workingMark(file.status);

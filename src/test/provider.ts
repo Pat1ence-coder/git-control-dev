@@ -26,7 +26,8 @@ function hostHarness(options: { busy?: boolean; mergeError?: Error; mergeWait?: 
         startupProblem: undefined,
         prepareWrite: async (_context: unknown, validate: () => void) => { validate(); return { repo: {}, check: async () => { validate(); }, assertCurrent: validate }; },
         snapshot: async (previewRef?: string) => { calls.push(previewRef ? `snapshot:${previewRef}` : 'snapshot'); return snapshot; },
-        select: async (id: string) => { calls.push(`select:${id}`); changes.fire(); }
+        select: async (id: string) => { calls.push(`select:${id}`); changes.fire(); },
+        stageAll: async () => { calls.push('stageAll'); return 2; }
     }, {
         get(target, key) {
             if (key in target) return (target as Record<string | symbol, unknown>)[key];
@@ -56,7 +57,7 @@ function hostHarness(options: { busy?: boolean; mergeError?: Error; mergeWait?: 
     return { messages, calls, provider, view, sendRaw: (message: unknown) => incoming.fire(message),
         ticket: () => ({ context: { repoId: latest.repoId, headName: latest.headName, headHash: latest.headHash }, writeToken: latest.writeToken }),
         send: (message: any) => {
-            const writes = ['merge', 'stage', 'resolve', 'abort-merge', 'native-stage-conflicts', 'commit-staged', 'stage-working-change', 'suggest-commit'];
+            const writes = ['merge', 'stage', 'resolve', 'abort-merge', 'native-stage-conflicts', 'commit-staged', 'stage-working-change', 'stage-all', 'suggest-commit'];
             incoming.fire(writes.includes(message.type) ? { refHash: 'b'.repeat(40), ...message, context: { repoId: latest.repoId, headName: latest.headName, headHash: latest.headHash }, writeToken: latest.writeToken } : message);
         } };
 }
@@ -191,4 +192,15 @@ test('host keeps the shared lock until the real write ends; selection and duplic
         h.send({ type: 'select-repo', repoId: '/repo2' }); await tick();
         assert.ok(h.calls.includes('select:/repo2'));
     } finally { release(); h.provider.dispose(); }
+});
+
+test('stage-all uses the host write guard and reports staged files', async () => {
+    const host = hostHarness();
+    try {
+        await host.send({ type: 'ready' }); await tick(); await tick();
+        host.calls.length = 0; host.messages.length = 0;
+        await host.send({ type: 'stage-all' }); await tick(); await tick();
+        assert.ok(host.calls.includes('stageAll'));
+        assert.ok(host.messages.some(m => m.type === 'live-result' && m.kind === 'staged' && /2 个未暂存文件/.test(m.text || '')));
+    } finally { host.provider.dispose(); }
 });

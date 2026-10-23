@@ -9,6 +9,26 @@ export interface TaskPresentation {
     footText: string;
     chips: { label: string; tone: 'pending' | 'staged' | 'conflict' | 'neutral' }[];
 }
+function remoteNarrative(s: Snapshot, pr: PullRequestInfo): string {
+    const state = { open: '已打开', closed: '已关闭', merged: '已合并' }[pr.state];
+    const head = `PR #${pr.number} ${state}（${pr.headRef} → ${pr.baseRef}）。`;
+    if (s.conflicts.length) {
+        const names = s.conflicts.slice(0, 2).map(f => f.path).join('、');
+        return `${head}当前有 ${s.conflicts.length} 个文件存在冲突${names ? `：${names}` : ''}；先处理冲突，再继续提交或推送。`;
+    }
+    if (pr.state === 'merged') return `${head}本地分支可以继续整理或删除，不会自动操作。`;
+    if (pr.state === 'closed') return `${head}如需继续，请先回到对应分支或重新打开 PR。`;
+    if (pr.checksUnavailable) return `${head}检查状态暂不可用；请到 GitHub 查看后再决定下一步。`;
+    if (pr.checksPartial) return `${head}只读取到 ${pr.checks.length} 项检查，结果可能不完整。`;
+    if (!pr.checks.length) return `${head}暂无可用的检查结果${s.workingTreeCount ? `；本地还有 ${s.workingTreeCount} 个未暂存文件。` : '。'}`;
+    const passed = pr.checks.filter(c => c.status === 'completed' && c.conclusion === 'success').length;
+    const failed = pr.checks.filter(c => c.status === 'completed' && c.conclusion && c.conclusion !== 'success' && !['neutral', 'skipped'].includes(c.conclusion)).length;
+    const running = pr.checks.filter(c => c.status !== 'completed').length;
+    const checks = `检查：${passed} 通过${failed ? `、${failed} 失败` : ''}${running ? `、${running} 进行中` : ''}。`;
+    const local = pr.headSha !== s.headHash ? `PR HEAD ${pr.headSha.slice(0, 7)} 与本地 HEAD 不同。` : '';
+    const work = s.workingTreeCount ? `本地还有 ${s.workingTreeCount} 个未暂存文件。` : '';
+    return `${head}${checks}${local}${work}`;
+}
 export function presentTask(input: { phase: string; snapshot: Snapshot | null; live: LiveState; pullRequest?: PullRequestInfo }): TaskPresentation {
     const { snapshot: s, live, phase } = input;
     const view = (title: string, label: string, tone: Tone, narrative: string, footText = label): TaskPresentation =>
@@ -53,11 +73,15 @@ export function presentTask(input: { phase: string; snapshot: Snapshot | null; l
         if (live.kind === 'overview' && !['reviewing', 'committing', 'error'].includes(phase)) {
             p.title = `${pr.title} #${pr.number}`;
             p.status = { label: { open: 'Open', closed: 'Closed', merged: 'Merged' }[pr.state], tone: pr.state };
+            p.narrative = remoteNarrative(s, pr);
         }
     }
     if (s.conflicts.length) p.chips.push({ label: `${s.conflicts.length} 冲突文件`, tone: 'conflict' });
-    if (s.workingTreeCount) p.chips.push({ label: `${s.workingTreeCount} 未暂存`, tone: 'pending' });
-    if (s.stagedCount) p.chips.push({ label: `${s.stagedCount} 已暂存`, tone: 'staged' });
+    const changes = [
+        s.workingTreeCount ? `${s.workingTreeCount} 未暂存` : '',
+        s.stagedCount ? `${s.stagedCount} 已暂存` : ''
+    ].filter(Boolean).join(' · ');
+    if (changes) p.chips.push({ label: changes, tone: s.workingTreeCount ? 'pending' : 'staged' });
     if (s.preview) p.chips.push({ label: '只读', tone: 'neutral' });
     return p;
 }
