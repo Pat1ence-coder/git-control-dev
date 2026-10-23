@@ -47,11 +47,6 @@ export async function run(): Promise<void> {
         git('add', '--', 'file.txt');
         await fs.writeFile(path.join(root, 'file.txt'), 'unstaged work stays here\n');
         const review = await service.reviewStaged();
-        if (typeof service.repository?.onDidCommit !== 'function') {
-            await assert.rejects(() => service.commitStaged(root, review.token, 'unsupported host'), /缺少 Git 提交事件/);
-            assert.equal(git('ls-remote', 'origin', 'refs/heads/main'), remote);
-            checks.push('old host safely refuses commit when onDidCommit is unavailable');
-        } else {
         const hash = await service.commitStaged(root, review.token, 'Native command acceptance');
         assert.equal(hash, git('rev-parse', 'HEAD'));
         assert.equal(git('show', 'HEAD:file.txt'), 'reviewed staged content');
@@ -62,8 +57,6 @@ export async function run(): Promise<void> {
         checks.push('native signing and sign-off honor editor settings');
         assert.equal(git('ls-remote', 'origin', 'refs/heads/main'), remote);
         checks.push('explicit null suppresses configured post-commit push');
-
-        }
 
         const second = process.env.GENERATIVE_GIT_HOST_SECOND;
         assert.ok(second, 'second isolated repository required');

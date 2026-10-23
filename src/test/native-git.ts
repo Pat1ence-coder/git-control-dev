@@ -32,20 +32,20 @@ test('native commit routes through official checks and verifies the outcome', as
         });
         await t.test('cancelled native flow does not report success or erase the previous SCM draft', async () => {
             reset(); host.commands.executeCommand = async () => {};
-            await assert.rejects(() => nativeCommit(repo, 'reviewed message'), /未产生可确认/);
+            await assert.rejects(() => nativeCommit(repo, 'reviewed message'), /提交未完成/);
             assert.equal(repo.inputBox.value, 'existing SCM draft');
         });
         await t.test('a failed Git operation can emit onDidCommit without creating a commit', async () => {
             reset(); host.commands.executeCommand = async () => { committed.fire(); };
-            await assert.rejects(() => nativeCommit(repo, 'reviewed message'), /未产生可确认/);
+            await assert.rejects(() => nativeCommit(repo, 'reviewed message'), /提交未完成/);
         });
-        await t.test('external HEAD changes without a native commit event are not reported as our success', async () => {
+        await t.test('a completed HEAD is accepted without relying on onDidCommit', async () => {
             reset(); host.commands.executeCommand = async () => { repo.state.HEAD!.commit = after; };
-            await assert.rejects(() => nativeCommit(repo, 'reviewed message'), /未产生可确认/);
+            assert.equal(await nativeCommit(repo, 'reviewed message'), after);
         });
         await t.test('user edits to SCM input during the official flow are preserved on cancellation', async () => {
             reset(); host.commands.executeCommand = async () => { repo.inputBox.value = 'new user draft'; };
-            await assert.rejects(() => nativeCommit(repo, 'reviewed message'), /未产生可确认/);
+            await assert.rejects(() => nativeCommit(repo, 'reviewed message'), /提交未完成/);
             assert.equal(repo.inputBox.value, 'new user draft');
         });
         await t.test('missing official command refuses the operation without an API fallback', async () => {

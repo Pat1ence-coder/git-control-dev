@@ -692,13 +692,15 @@ export class GitService implements vscode.Disposable {
         }
         // Native command supplies branch protection (including providers),
         // diagnostics, signing, sign-off and save-before-commit preferences.
-        this.reviewTokens.delete(repoId);
+        // Keep the review token until success: cancellation must be retryable
+        // without forcing the user to reload the whole staged review.
         const hash = await nativeCommit(repo, message.trim(), async () => {
             await write.check();
             if (token !== await this.reviewFingerprint(repo))
                 throw new UserFacingError('进入官方提交前暂存区或仓库已变化，请重新加载审查。');
             write.assertCurrent();
         });
+        this.reviewTokens.delete(repoId);
         await repo.status().catch(() => {});
         this.schedule();
         return hash;

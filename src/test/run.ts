@@ -513,7 +513,7 @@ test('GitService: real conflicts, resolution/staging, history diff, abort and wo
             const command = host.commands.executeCommand;
             let reachedNative = false;
             host.commands.executeCommand = async name => { if (name === 'git.commit') reachedNative = true; };
-            try { await assert.rejects(() => service.commitStaged(dir, review.token, 'dirty'), /未产生可确认/); }
+            try { await assert.rejects(() => service.commitStaged(dir, review.token, 'dirty'), /提交未完成/); }
             finally { host.commands.executeCommand = command; }
             assert.ok(reachedNative, 'native command owns the configured save/cancel decision');
             doc.isDirty = false;
@@ -589,7 +589,7 @@ test('GitService: real conflicts, resolution/staging, history diff, abort and wo
                 git('reset', '--hard', 'HEAD'); await repo.status();
             }
         });
-        await t.test('commit failure preserves index and permits retry after a fresh review', async () => {
+        await t.test('commit failure preserves index and permits retry without reloading review', async () => {
             await fs.writeFile(path.join(dir, 'file.ts'), 'hook test\n'); git('add', 'file.ts');
             const review = await service.reviewStaged();
             const head = git('rev-parse', 'HEAD');
@@ -600,8 +600,7 @@ test('GitService: real conflicts, resolution/staging, history diff, abort and wo
                 assert.equal(git('rev-parse', 'HEAD'), head);
                 assert.equal(git('show', ':file.ts'), 'hook test');
             } finally { await fs.unlink(hook); }
-            const refreshed = await service.reviewStaged();
-            await service.commitStaged(dir, refreshed.token, 'retry after review');
+            await service.commitStaged(dir, review.token, 'retry after review');
             assert.equal(git('show', 'HEAD:file.ts'), 'hook test');
         });
         await t.test('reviewed merge creates two-parent commit and clears pending merge', async () => {
