@@ -6,6 +6,7 @@ import { renderTaskControls, type TaskView } from './task';
 import { presentTask } from './presentation';
 import { renderPullRequest, renderLoadingGraph } from './remote';
 import { repositoryContext, sameContext, nativeGitLabels } from '../shared/protocol';
+import { morph } from './morph';
 
 declare function acquireVsCodeApi(): { postMessage(message: ToHost): void };
 let api: ReturnType<typeof acquireVsCodeApi> | undefined;
@@ -56,15 +57,63 @@ function update(id: string, html: string): void {
     const selection = focus?.tagName === 'TEXTAREA'
         ? [(focus as HTMLTextAreaElement).selectionStart, (focus as HTMLTextAreaElement).selectionEnd] : undefined;
     const scroll = el.querySelector<HTMLElement>('.patch')?.scrollTop;
-    el.innerHTML = html;
+    // Keyed morph instead of innerHTML: unchanged nodes stay put, moved rows transition.
+    if (canMorph) {
+        const { inserted, exiting } = morph(el, html);
+        animateChanges(inserted, exiting);
+    } else el.innerHTML = html;
     htmlCache.set(id, html);
     if (action) {
-        const replacement = Array.from(el.querySelectorAll<HTMLElement>('[data-action]')).find(e => e.dataset.action === action && (!key || e.dataset.hash === key || e.dataset.path === key || e.dataset.strategy === key));
+        const replacement = Array.from(el.querySelectorAll<HTMLElement>('[data-action]:not([data-exiting])')).find(e => e.dataset.action === action && (!key || e.dataset.hash === key || e.dataset.path === key || e.dataset.strategy === key));
         replacement?.focus({ preventScroll: true });
         if (selection && replacement?.tagName === 'TEXTAREA') (replacement as HTMLTextAreaElement).setSelectionRange(selection[0], selection[1]);
     }
     const patch = el.querySelector<HTMLElement>('.patch');
     if (patch && scroll !== undefined) patch.scrollTop = scroll;
+}
+// Hosts without <template> (the controller test DOM) keep the plain innerHTML path.
+const canMorph = typeof HTMLTemplateElement === 'function';
+const ENTER_MS = 1100, EXIT_MS = 180, CASCADE_MS = 900;
+const entering = new Map<string, ReturnType<typeof setTimeout>>();
+/** Entrance for rows/nodes added to an existing graph; exit fade for keyed rows that left. */
+function animateChanges(inserted: Element[], exiting: Element[]): void {
+    for (const node of exiting) {
+        if (reduced) { node.remove(); continue; }
+        node.classList.add('m-exit');
+        setTimeout(() => node.remove(), EXIT_MS);
+    }
+    if (reduced) return;
+    for (const node of inserted) {
+        if (!node.matches('.commit-row, .node, .edge')) continue;
+        node.classList.add('m-enter');
+        setTimeout(() => node.classList.remove('m-enter'), ENTER_MS);
+    }
+}
+const segmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'word' }) : undefined;
+/** Narrative streams in word by word; the key changes with the text so a new sentence replays. */
+function renderNarrative(text: string): string {
+    if (!text) return '';
+    if (reduced) return esc(text);
+    const parts = segmenter ? Array.from(segmenter.segment(text), part => part.segment) : text.split(/(\s+)/);
+    const step = Math.min(24, 900 / Math.max(1, parts.length));
+    let key = 0;
+    for (let i = 0; i < text.length; i++) key = (key * 31 + text.charCodeAt(i)) | 0;
+    return `<span class="narrative" data-key="${(key >>> 0).toString(36)}">${parts.map((part, i) => /^\s+$/.test(part) ? part
+        : `<span class="narrative-word" style="animation-delay:${Math.round(i * step)}ms">${esc(part)}</span>`).join('')}</span>`;
+}
+let sweptCommit: string | undefined;
+/** After a commit lands in the graph, its lane flashes top to bottom once. */
+function sweepCommittedLane(): void {
+    const hash = app.live.kind === 'committed' ? app.live.hash : undefined;
+    if (!hash || !/^[a-f0-9]{7,64}$/i.test(hash) || sweptCommit === hash || reduced || !canMorph) return;
+    const row = root.querySelector<HTMLElement>(`.commit-row[data-hash="${hash}"]:not([data-exiting])`);
+    if (!row) return;
+    sweptCommit = hash;
+    const rows = Array.from(root.querySelectorAll<HTMLElement>(`.commit-row[data-lane="${row.dataset.lane}"]:not([data-exiting]):not(.m-enter)`));
+    rows.forEach((lane, i) => setTimeout(() => {
+        lane.classList.add('m-sweep');
+        setTimeout(() => lane.classList.remove('m-sweep'), 700);
+    }, i * 45));
 }
 function busy(): boolean { return !!app.switching || !!app.nativePending || app.live.kind === 'merging' || app.live.kind === 'resolving' || app.review.committing; }
 function phase(): string {
@@ -113,7 +162,7 @@ function render(): void {
         : renderLiveStage(app.snapshot, app.live, app.selectedPath);
     update('stage', body);
     update('task-notice', app.notice ? `<div class="notice ${app.notice.level}" role="status">${esc(app.notice.text)}</div>` : '');
-    update('task-explanation', esc(presentation.narrative));
+    update('task-explanation', renderNarrative(presentation.narrative));
     const patch = app.reviewOpen && !app.review.error ? app.review.data?.patch : undefined;
     const stats = patch === undefined ? '' : `<span class="meta-pill" title="当前审查文件的增删行数"><span class="addition-text">+${patch.split('\n').filter(l => l.startsWith('+') && !l.startsWith('+++')).length}</span><span class="deletion-text">−${patch.split('\n').filter(l => l.startsWith('-') && !l.startsWith('---')).length}</span><span>当前文件</span></span>`;
     const chips = presentation.chips.map(c => `<span class="meta-pill ${c.tone}"><i class="meta-dot" aria-hidden="true"></i>${esc(c.label)}</span>`).join('');
@@ -156,14 +205,21 @@ function render(): void {
         const stage = document.getElementById('stage')!;
         stage.classList.remove('is-entering'); void stage.offsetWidth; stage.classList.add('is-entering');
         document.getElementById('announcer')!.textContent = presentation.status.label;
-        if (!reduced) {
-            const card = document.getElementById('task-card')!;
-            card.classList.remove('is-entering'); void card.offsetWidth; card.classList.add('is-entering');
-            const graph = document.getElementById('graph')!;
-            graph.classList.remove('is-entering'); void graph.offsetWidth; graph.classList.add('is-entering');
+        // The card/row cascade plays once when the repository first appears; later phase
+        // changes are carried by the keyed morph so stable rows don't flash.
+        if (!reduced && ['', 'loading', 'empty'].includes(lastPhase)) {
+            // Drop the class afterwards: a lingering `#graph.is-entering` would replay the
+            // cascade on any row whose own motion class is later removed.
+            for (const id of ['task-card', 'graph']) {
+                const el = document.getElementById(id)!;
+                el.classList.remove('is-entering'); void el.offsetWidth; el.classList.add('is-entering');
+                clearTimeout(entering.get(id));
+                entering.set(id, setTimeout(() => el.classList.remove('is-entering'), CASCADE_MS));
+            }
         }
         lastPhase = current;
     }
+    sweepCommittedLane();
 }
 function closeDetail(): void { app.detailOpen = false; app.detail = undefined; app.detailHash = undefined; app.detailError = undefined; app.requestId++; }
 function resetReview(): void { app.reviewOpen = false; app.review = freshReview(); app.requestId++; }

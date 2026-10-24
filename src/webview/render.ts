@@ -38,6 +38,8 @@ export function renderGraph(graph: GraphModel, reduced: boolean, selected?: stri
     const x = (lane: number) => left + lane * laneW;
     const y = (row: number) => row * rowH + rowH / 2;
     const nodes = new Map(graph.nodes.map(n => [n.id, n]));
+    // Everything is keyed by commit/edge id and placed with transforms or `d`, so a
+    // morph between snapshots slides rows and curves instead of rebuilding the tree.
     const paths = graph.edges.map(edge => {
         const a = nodes.get(edge.from), b = nodes.get(edge.to);
         if (!a || !b) return '';
@@ -46,20 +48,20 @@ export function renderGraph(graph: GraphModel, reduced: boolean, selected?: stri
         const start = edge.style === 'solid' ? a : b;
         const end = edge.style === 'solid' ? b : a;
         const mid = (y(start.row) + y(end.row)) / 2;
-        const d = start.lane === end.lane ? `M${x(start.lane)} ${y(start.row)}L${x(end.lane)} ${y(end.row)}`
-            : `M${x(start.lane)} ${y(start.row)}C${x(start.lane)} ${mid},${x(end.lane)} ${mid},${x(end.lane)} ${y(end.row)}`;
+        // Always one cubic segment (straight when lanes match) so `d` can interpolate.
+        const d = `M${x(start.lane)} ${y(start.row)}C${x(start.lane)} ${mid},${x(end.lane)} ${mid},${x(end.lane)} ${y(end.row)}`;
         const lane = a.lane === b.lane ? a.lane : b.lane;
         const style = reduced && edge.style === 'join' ? 'solid' : edge.style;
-        return `<path class="edge lane-${lane % 6} ${style}" d="${d}"/>`;
+        return `<path class="edge lane-${lane % 6} ${style}" data-key="e:${esc(edge.id)}" data-exit d="${d}"/>`;
     }).join('');
-    const dots = graph.nodes.map(n => `<g class="lane-${n.lane % 6} ${n.role}">${n.tip && !reduced ? `<circle class="pulse" cx="${x(n.lane)}" cy="${y(n.row)}" r="5"/>` : ''}<circle class="dot" cx="${x(n.lane)}" cy="${y(n.row)}" r="${n.tip ? 4.5 : 3.5}"/>${n.role === 'merge' ? `<circle class="merge-ring" cx="${x(n.lane)}" cy="${y(n.row)}" r="7"/>` : ''}</g>`).join('');
+    const dots = graph.nodes.map(n => `<g class="node lane-${n.lane % 6} ${n.role}" data-key="n:${esc(n.id)}" data-exit style="transform:translate(${x(n.lane)}px,${y(n.row)}px)">${n.tip && !reduced ? '<circle class="pulse" r="5"/>' : ''}<circle class="dot" r="${n.tip ? 4.5 : 3.5}"/>${n.role === 'merge' ? '<circle class="merge-ring" r="7"/>' : ''}</g>`).join('');
     const rows = graph.nodes.map(n => {
         const clickable = n.role === 'commit' || n.role === 'merge';
         const content = `<span class="commit-subject" title="${esc(n.title)}">${esc(n.title)}</span>${n.badges.map(b => `<span class="branch-tag" title="${esc(b)}">${esc(clipChars(b, 32))}</span>`).join('')}<span class="commit-meta"><code>${esc(n.hash)}</code>${n.author ? `<span>${esc(clipChars(n.author, 18))}</span>` : ''}${n.authorDate ? `<time datetime="${esc(n.authorDate)}" title="${esc(n.authorDate)}">${relativeTime(n.authorDate)}</time>` : ''}</span>`;
-        const attrs = `class="commit-row lane-${n.lane % 6} ${n.role} ${selected === n.id ? 'selected' : ''}" style="grid-row:${n.row + 1};--row:${n.row}"`;
+        const attrs = `class="commit-row lane-${n.lane % 6} ${n.role} ${selected === n.id ? 'selected' : ''}" style="--row:${n.row};transform:translateY(${n.row * rowH}px)" data-key="r:${esc(n.id)}" data-lane="${n.lane}" data-exit`;
         return clickable ? `<button type="button" ${attrs} data-action="inspect-commit" data-hash="${esc(n.id)}" aria-label="查看提交 ${esc(n.hash)} ${esc(n.title)}">${content}</button>` : `<div ${attrs}>${content}</div>`;
     }).join('');
-    return `<div class="commit-tree" style="--rail-width:${railWidth}px;--tree-height:${height}px" role="group" aria-label="提交与分支图，点击提交查看变更"><svg class="tree-rail" width="${railWidth}" height="${height}" viewBox="0 0 ${railWidth} ${height}" aria-hidden="true">${paths}${dots}</svg><div class="commit-list">${rows}</div></div>`;
+    return `<div class="commit-tree" data-key="tree" style="--rail-width:${railWidth}px;height:${height}px" role="group" aria-label="提交与分支图，点击提交查看变更"><svg class="tree-rail" width="${railWidth}" style="height:${height}px" aria-hidden="true">${paths}${dots}</svg><div class="commit-list">${rows}</div></div>`;
 }
 export function icon(name: 'branch' | 'file' | 'arrow' | 'external' | 'check' | 'expand' | 'refresh' | 'commit' | 'warning' | 'close' | 'chevron'): string {
     const paths = {

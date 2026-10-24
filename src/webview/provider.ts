@@ -19,7 +19,8 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
     private queue: Promise<void> = Promise.resolve();
     private readonly subscriptions: vscode.Disposable[] = [];
     constructor(private readonly context: vscode.ExtensionContext, private readonly git: GitService, private readonly operation = { busy: false }) {
-        this.subscriptions.push(git.onDidChange(() => {
+        this.subscriptions.push(git.onDidChange(change => {
+            if (change?.shallow) { void this.enqueue(() => this.pushShallowSnapshot()); return; }
             this.invalidateRemote();
             void this.enqueue(() => this.pushSnapshot(false));
         }));
@@ -71,6 +72,13 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
         if (!this.ready || view !== this.view) return;
         this.post({ type: 'snapshot', snapshot: this.withWriteTicket(snapshot) });
         this.refreshRemote(snapshot);
+    }
+    /** Working-tree-only change: same HEAD and refs, so PR state stays and GitHub is not re-read. */
+    private async pushShallowSnapshot(): Promise<void> {
+        if (!this.ready) return;
+        const snapshot = this.git.shallowSnapshot(this.previewRef);
+        if (!snapshot) { this.invalidateRemote(); return this.pushSnapshot(false); }
+        this.post({ type: 'snapshot', snapshot: this.withWriteTicket(snapshot) });
     }
     private invalidateRemote(): void {
         this.remoteVersion++;

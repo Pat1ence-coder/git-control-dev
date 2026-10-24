@@ -17,13 +17,21 @@ import { sameContext, type RepositoryContext, type PullRequestState } from '../s
 import { describeGitError, UserFacingError } from './errors';
 export { describeGitError } from './errors';
 export const MAX_FILE_BYTES = 180000;
+/** `shallow`: only working tree / index moved; consumers may use shallowSnapshot(). */
+export interface GitChange { shallow: boolean }
+// Modern hosts leave state.refs empty, so ref-only moves (git branch, fetch into a
+// non-HEAD branch) are only caught by this age bound or an explicit refresh.
+const SHALLOW_MAX_AGE = 15_000;
 export class GitService implements vscode.Disposable {
     private api?: GitAPI;
     private readonly subscriptions: vscode.Disposable[] = [];
     private readonly repositories = new Map<Repository, vscode.Disposable>();
-    private readonly changed = new vscode.EventEmitter<void>();
+    private readonly changed = new vscode.EventEmitter<GitChange | void>();
     readonly onDidChange = this.changed.event;
     private timer?: ReturnType<typeof setTimeout>;
+    private pendingFull = false;
+    /** Last full snapshot per preview ref, reusable while structureKey() is unchanged. */
+    private readonly fullSnapshots = new Map<string, { snapshot: Snapshot; key: string; at: number }>();
     private selected?: string;
     private ready: Promise<void> = Promise.resolve();
     private readonly reviewTokens = new Map<string, string>();
@@ -135,9 +143,36 @@ export class GitService implements vscode.Disposable {
             }
         for (const repo of this.api?.repositories || [])
             if (!this.repositories.has(repo))
-                this.repositories.set(repo, repo.state.onDidChange(() => this.schedule()));
+                this.repositories.set(repo, repo.state.onDidChange(() => this.schedule(false)));
     }
-    private schedule(): void { clearTimeout(this.timer); this.timer = setTimeout(() => this.changed.fire(), 180); }
+    /** Repository state events are shallow candidates; everything else (lifecycle, writes) is full.
+     *  A pending full change is never downgraded by a later shallow one. */
+    private schedule(full = true): void {
+        this.pendingFull ||= full;
+        clearTimeout(this.timer);
+        this.timer = setTimeout(() => { const shallow = !this.pendingFull; this.pendingFull = false; this.changed.fire({ shallow }); }, full ? 180 : 80);
+    }
+    /** Everything a shallow snapshot reuses from the last full one; any difference forces a full read. */
+    private structureKey(repo: Repository): string {
+        const s = repo.state, h = s.HEAD;
+        return JSON.stringify([this.writeEpoch, repo.rootUri.fsPath, h?.type, h?.name, h?.commit, h?.ahead, h?.behind, h?.upstream,
+            (s.refs || []).map(r => [r.type, r.name, r.commit]), s.mergeChanges.map(c => [c.uri.fsPath, c.status]), s.rebaseCommit?.hash]);
+    }
+    /** Working tree / index only, on top of the last full snapshot (graph, branches, preview reused).
+     *  Returns undefined when that is not provably equivalent; callers then take snapshot(). */
+    shallowSnapshot(previewRef?: string): Snapshot | undefined {
+        const repo = this.repository;
+        const last = this.fullSnapshots.get(previewRef ?? '');
+        if (!repo || !last || Date.now() - last.at > SHALLOW_MAX_AGE || last.key !== this.structureKey(repo)) return undefined;
+        const workingTreeFiles = this.workingFiles(repo);
+        return { ...last.snapshot, workingTreeFiles, workingTreeCount: workingTreeFiles.length, stagedCount: repo.state.indexChanges.length };
+    }
+    private workingFiles(repo: Repository): NonNullable<Snapshot['workingTreeFiles']> {
+        return this.workingChanges(repo).map(change => ({
+            path: path.relative(repo.rootUri.fsPath, change.uri.fsPath),
+            status: statusLabel(change.status), untracked: change.status === 7
+        }));
+    }
     get repository(): Repository | undefined {
         return this.api?.repositories.find(r => this.selected && samePath(r.rootUri.fsPath, this.selected)) || (vscode.workspace.workspaceFolders?.[0] ? this.api?.getRepository(vscode.workspace.workspaceFolders[0].uri) : undefined) || this.api?.repositories[0];
     }
@@ -369,12 +404,12 @@ export class GitService implements vscode.Disposable {
         const repo = this.repository;
         if (!repo)
             return null;
+        // Taken before any await: if state moves during the read, the key goes stale and
+        // the next shallow request falls back to a full snapshot.
+        const key = this.structureKey(repo), at = Date.now();
         const branches = await this.localBranches(repo);
         const branchList = await this.branchOverview(repo, branches);
-        const workingTreeFiles = this.workingChanges(repo).map(change => ({
-            path: path.relative(repo.rootUri.fsPath, change.uri.fsPath),
-            status: statusLabel(change.status), untracked: change.status === 7
-        }));
+        const workingTreeFiles = this.workingFiles(repo);
         let commits: Commit[] = [];
         try {
             commits = await repo.log({ maxEntries: 36, refNames: [...new Set(['HEAD', ...branches.map(r => r.name!)])].slice(0, 24) });
@@ -421,7 +456,11 @@ export class GitService implements vscode.Disposable {
         let graph = layoutCommits(commits.map(c => ({ ...c, badges: branches.filter(r => r.commit === c.hash).map(r => r.name!) })), repo.state.HEAD?.commit);
         if (mergeHash && !conflicts.length && repo.state.HEAD?.commit)
             graph = withPendingMerge(graph, repo.state.HEAD.commit, mergeHash.split('\n')[0]);
-        return { nativeGit: { hasHead: !!repo.state.HEAD?.commit && repo.state.HEAD?.type === 0, hasUpstream: !!repo.state.HEAD?.upstream }, repoId: repo.rootUri.fsPath, repoName: path.basename(repo.rootUri.fsPath), repositories: (this.api?.repositories || []).map(r => ({ id: r.rootUri.fsPath, name: path.basename(r.rootUri.fsPath) })), headName: repo.state.HEAD?.name || 'HEAD', headHash: repo.state.HEAD?.commit, branches: branches.map(r => r.name!), conflicts, workingTreeCount: workingTreeFiles.length, workingTreeFiles, stagedCount: repo.state.indexChanges.length, mergeHead: !!mergeHash, mergingRef: /Merge (?:remote-tracking )?branch '([^']+)'/.exec(mergeMessage)?.[1], rebasing: !!repo.state.rebaseCommit, canMerge: typeof repo.merge === 'function', canAbort: typeof repo.mergeAbort === 'function', graph, branchList, preview };
+        const snapshot: Snapshot = { nativeGit: { hasHead: !!repo.state.HEAD?.commit && repo.state.HEAD?.type === 0, hasUpstream: !!repo.state.HEAD?.upstream }, repoId: repo.rootUri.fsPath, repoName: path.basename(repo.rootUri.fsPath), repositories: (this.api?.repositories || []).map(r => ({ id: r.rootUri.fsPath, name: path.basename(r.rootUri.fsPath) })), headName: repo.state.HEAD?.name || 'HEAD', headHash: repo.state.HEAD?.commit, branches: branches.map(r => r.name!), conflicts, workingTreeCount: workingTreeFiles.length, workingTreeFiles, stagedCount: repo.state.indexChanges.length, mergeHead: !!mergeHash, mergingRef: /Merge (?:remote-tracking )?branch '([^']+)'/.exec(mergeMessage)?.[1], rebasing: !!repo.state.rebaseCommit, canMerge: typeof repo.merge === 'function', canAbort: typeof repo.mergeAbort === 'function', graph, branchList, preview };
+        // Conflict hunks, MERGE_HEAD and rebase state live in files the key does not cover.
+        if (!conflicts.length && !mergeHash && !repo.state.rebaseCommit) this.fullSnapshots.set(previewRef ?? '', { snapshot, key, at });
+        else this.fullSnapshots.delete(previewRef ?? '');
+        return snapshot;
     }
     async merge(ref: string, guard?: WriteGuard, expectedSource?: string): Promise<{
         conflict: boolean;

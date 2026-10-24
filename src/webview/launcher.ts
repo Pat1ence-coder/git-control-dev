@@ -158,7 +158,7 @@ export class GenerativeGitLauncher implements vscode.WebviewViewProvider, vscode
             }),
             view.onDidChangeVisibility(() => { if (view.visible) void this.refresh(); }),
             view.onDidDispose(() => { if (this.view === view) this.view = undefined; }),
-            this.git.onDidChange(() => void this.refresh())
+            this.git.onDidChange(change => void this.refresh(!!change?.shallow))
         );
         void this.refresh();
     }
@@ -171,11 +171,11 @@ export class GenerativeGitLauncher implements vscode.WebviewViewProvider, vscode
         if (this.view) void this.view.webview.postMessage({ type: 'state', html });
     }
 
-    private async refresh(): Promise<void> {
+    private async refresh(shallow = false): Promise<void> {
         if (!this.view) return;
         try {
             await this.git.whenReady();
-            const snapshot = await this.git.snapshot(this.previewRef);
+            const snapshot = (shallow ? this.git.shallowSnapshot(this.previewRef) : undefined) ?? await this.git.snapshot(this.previewRef);
             this.post(renderSidebar(sidebarState(snapshot, this.git.startupProblem)));
         } catch (error) {
             this.post(renderError(describeGitError(error)));

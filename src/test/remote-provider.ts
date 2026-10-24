@@ -12,10 +12,11 @@ function harness() {
     let snapshot: Snapshot = { repoId: '/repo', repoName: 'repo', repositories: [], headName: 'main', headHash: 'a'.repeat(40),
         branches: [], conflicts: [], workingTreeCount: 0, stagedCount: 0, mergeHead: false, rebasing: false,
         canMerge: true, canAbort: true, graph: { nodes: [], edges: [], laneCount: 1 } };
-    const changed = new EventEmitter<void>(), incoming = new EventEmitter<unknown>(), disposed = new EventEmitter<void>();
+    const changed = new EventEmitter<{ shallow: boolean } | void>(), incoming = new EventEmitter<unknown>(), disposed = new EventEmitter<void>();
     const messages: ToWebview[] = [], pending: ((result: PullRequestState) => void)[] = [];
+    let shallow: Snapshot | undefined;
     const service = { onDidChange: changed.event, whenReady: async () => {},
-        snapshot: async () => snapshot, matchesContext: (context: Snapshot) => sameContext(context, snapshot),
+        snapshot: async () => snapshot, shallowSnapshot: () => shallow, matchesContext: (context: Snapshot) => sameContext(context, snapshot),
         pullRequest: async () => new Promise<PullRequestState>(resolve => pending.push(resolve)),
         clearPullRequestCache() {} } as unknown as GitService;
     const provider = new GenerativeGitViewProvider({ extensionUri: Uri.file('/extension') } as any, service);
@@ -24,7 +25,8 @@ function harness() {
         postMessage: (m: ToWebview) => { messages.push(m); return Promise.resolve(true); } }, onDidDispose: disposed.event } as any);
     return { provider, messages, pending, send: (value: unknown) => incoming.fire(value),
         context: () => repositoryContext(snapshot), close: () => disposed.fire(),
-        change: () => { snapshot = { ...snapshot, repoId: '/other', headName: 'feature' }; changed.fire(); } };
+        change: () => { snapshot = { ...snapshot, repoId: '/other', headName: 'feature' }; changed.fire(); },
+        save: (reusable: boolean) => { shallow = reusable ? { ...snapshot, workingTreeCount: snapshot.workingTreeCount + 1 } : undefined; changed.fire({ shallow: true }); } };
 }
 
 test('remote protocol rejects missing context and discards caller-supplied URLs', () => {
@@ -68,4 +70,20 @@ test('disposed webviews and noncanonical URLs cannot open a PR', async () => {
             if (close) assert.ok(!h.messages.some(m => m.type === 'pull-request' && m.state?.kind === 'ok'));
         } finally { h.provider.dispose(); env.openExternal = open; }
     }
+});
+
+test('working-tree-only changes keep PR state and skip GitHub; unprovable ones fall back to a full read', async () => {
+    const h = harness();
+    try {
+        h.send({ type: 'ready' }); await tick();
+        h.pending[0](state); await tick();
+        const before = h.messages.length;
+        h.save(true); await tick();
+        const after = h.messages.slice(before);
+        assert.deepEqual(after.map(m => m.type), ['snapshot'], 'no pull-request reset on a file save');
+        assert.equal(after[0].type === 'snapshot' && after[0].snapshot?.workingTreeCount, 1);
+        assert.equal(h.pending.length, 1, 'GitHub is not re-read');
+        h.save(false); await tick();
+        assert.equal(h.pending.length, 2, 'without a reusable snapshot the full path reloads remote state');
+    } finally { h.provider.dispose(); }
 });

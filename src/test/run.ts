@@ -258,6 +258,31 @@ test('GitService: real conflicts, resolution/staging, history diff, abort and wo
             try { assert.deepEqual((await service.snapshot())?.branches, ['feature', 'main']); }
             finally { repo.getRefs = getRefs; repo.getBranches = undefined; }
         });
+        await t.test('shallow snapshots reuse graph and branches only while HEAD and conflicts are unchanged', async () => {
+            await new Promise(resolve => setTimeout(resolve, 250)); // let init's pending full change fire first
+            const full = (await service.snapshot())!;
+            const event = new Promise<unknown>(resolve => { const d = service.onDidChange(change => { d.dispose(); resolve(change); }); });
+            await fs.writeFile(path.join(dir, 'scratch.txt'), 'draft\n');
+            await repo.status();
+            assert.deepEqual(await event, { shallow: true }, 'repository state events are shallow candidates');
+            const shallow = service.shallowSnapshot()!;
+            assert.ok(shallow, 'unchanged HEAD/refs/conflicts allow a shallow read');
+            assert.equal(shallow.graph, full.graph, 'graph is reused, not re-read');
+            assert.equal(shallow.branchList, full.branchList);
+            assert.equal(shallow.workingTreeCount, full.workingTreeCount + 1);
+            assert.ok(shallow.workingTreeFiles?.some(f => f.path === 'scratch.txt' && f.untracked));
+            assert.equal(service.shallowSnapshot('refs/heads/feature'), undefined, 'each preview ref needs its own full read');
+            git('add', 'scratch.txt'); git('commit', '-m', 'scratch');
+            await repo.status();
+            assert.equal(service.shallowSnapshot(), undefined, 'a new HEAD forces a full snapshot');
+            git('reset', '--hard', 'HEAD~1');
+            await repo.status();
+            await service.snapshot();
+            const now = Date.now;
+            Date.now = () => now() + 60_000;
+            try { assert.equal(service.shallowSnapshot(), undefined, 'stale full snapshots are not reused'); }
+            finally { Date.now = now; }
+        });
         await t.test('branch list and read-only preview keep HEAD unchanged', async () => {
             const current = (await service.snapshot())!;
             assert.equal(current.headName, 'main');
@@ -754,8 +779,11 @@ test('merge graph draws pending and join edges from parent tips toward the resul
         ]
     };
     const html = renderGraph(graph, false);
-    assert.match(html, /class="edge lane-1 pending" d="M32 45C32 30,14 30,14 15"/);
-    assert.match(html, /class="edge lane-0 join" d="M14 75L14 15"/);
+    assert.match(html, /class="edge lane-1 pending" data-key="e:incoming" data-exit d="M32 45C32 30,14 30,14 15"/);
+    // Same-lane edges are a straight cubic so `d` can interpolate between snapshots.
+    assert.match(html, /class="edge lane-0 join" data-key="e:current" data-exit d="M14 75C14 45,14 45,14 15"/);
+    assert.match(html, /data-key="r:branch"[^>]*/);
+    assert.match(html, /style="transform:translate\(32px,45px\)"/);
     assert.equal(graph.edges[0].from, 'merge');
     assert.equal(graph.nodes[0].row, 0);
     const reduced = renderGraph(graph, true);

@@ -33,7 +33,7 @@ export function harness() {
     const posted: any[] = [];
     const get = (id: string) => { if (!nodes.has(id))
         nodes.set(id, new Element()); return nodes.get(id)!; };
-    const context = { window: Object.assign(win, { matchMedia: () => ({ matches: false }) }), document: { getElementById: get, activeElement: null }, navigator: { clipboard: { writeText: async () => { } } }, HTMLSelectElement: Select, console,
+    const context = { window: Object.assign(win, { matchMedia: () => ({ matches: false }) }), document: { getElementById: get, activeElement: null }, navigator: { clipboard: { writeText: async () => { } } }, HTMLSelectElement: Select, console, setTimeout, clearTimeout,
         acquireVsCodeApi: () => ({ postMessage: (message: ToHost) => { posted.push(message); } }) };
     vm.runInNewContext(readFileSync('dist/webview.js', 'utf8'), context);
     return {

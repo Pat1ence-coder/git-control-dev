@@ -30,20 +30,35 @@ function conflictControl(view: TaskView, files: ConflictFile[]): string {
     const count = files.reduce((n, f) => n + Math.max(1, f.hunks.length), 0);
     return `<div class="conflict-peek">${button('peek-conflicts', `${icon('warning')}<span>${count} 处冲突</span><span class="subtle">· ${files.length} 个文件</span>`, 'conflict-trigger', `aria-expanded="${view.peekOpen}" aria-controls="conflict-popover"`)}${view.peekOpen ? `<section id="conflict-popover" class="conflict-popover" aria-label="冲突摘要"><div class="popover-heading"><strong>双方修改了相同的代码</strong>${button('close-peek', icon('close'), 'icon-button', 'aria-label="关闭冲突摘要"')}</div>${files.slice(0, 3).map(excerpt).join('')}<div class="popover-footer"><span>这里只展示冲突片段</span>${button('show-conflicts', '查看完整冲突', 'text-button')}</div></section>` : ''}</div>`;
 }
+/** Footer = status + one actions group. The main button keeps data-key="main-action" in
+ *  every phase so morph turns it busy in place instead of swapping it out. */
+function foot(status: string, actions: string): string {
+    return `${status}<div class="footer-actions">${actions}</div>`;
+}
+const main = (action: string, label: string, cls: string, attrs = '') => button(action, label, cls, `data-key="main-action" ${attrs}`);
+const running: Record<string, [string, string]> = {
+    loading: ['正在连接 Git', '连接中'], merging: ['正在比较分支变更', '合并中'],
+    resolving: ['请完成编辑器中的确认', '处理中'], committing: ['正在创建提交', '提交中']
+};
 export function renderTaskControls(view: TaskView, footText?: string): string {
     const { phase, snapshot: s } = view;
     const disabled = view.busy ? 'disabled' : '';
-    if (view.detailOpen) return `<span class="task-status-line">${icon('commit')}正在查看提交详情</span>${button('close-detail', '返回任务', 'text-button')}`;
-    if (view.reviewOpen) return `<span class="task-status-line">${icon('commit')}${phase === 'committing' ? '正在提交已审查的改动' : '审查暂存内容，再确认提交'}</span>${button('collapse-task', '收起审查', 'text-button', disabled)}`;
-    if (phase === 'conflict') return conflictControl(view, taskConflicts(view)) + (view.conflictsOpen
+    const line = (text: string, lead = '', tone = '') => `<span class="task-status-line${tone ? ' ' + tone : ''}">${lead}${text}</span>`;
+    if (view.detailOpen) return foot(line('正在查看提交详情', icon('commit')), button('close-detail', '返回任务', 'text-button'));
+    if (view.reviewOpen) {
+        if (phase === 'committing') return foot(line('正在提交已审查的改动', '<i class="spinner"></i>'), main('busy', '<i class="spinner"></i>提交中', 'primary is-busy', 'disabled aria-busy="true"'));
+        return foot(line('审查暂存内容，再确认提交', icon('commit')), button('collapse-task', '收起审查', 'text-button', disabled));
+    }
+    if (phase === 'conflict') return conflictControl(view, taskConflicts(view)) + `<div class="footer-actions">${view.conflictsOpen
         ? button('collapse-task', '收起详情', 'text-button')
-        : button('show-conflicts', '解决冲突', 'conflict-primary'));
-    const running: Record<string, string> = { loading: '正在连接 Git', merging: '正在比较分支变更', resolving: '请完成编辑器中的冲突确认', committing: '正在创建提交' };
-    if (running[phase]) return `<span class="task-status-line"><i class="spinner"></i>${running[phase]}</span>`;
-    if (phase === 'committed') return `<span class="task-status-line success">${icon('check')}改动已提交到本地</span><div class="footer-actions">${button('live-back', '返回工作区', 'text-button')}${button('inspect-commit', '查看提交', 'primary', `data-hash="${esc(view.live.kind === 'committed' ? view.live.hash || s?.headHash || '' : '')}"`)}</div>`;
-    if (phase === 'error') return `<span class="task-status-line warning">${icon('warning')}操作没有完成</span>${button('live-back', '返回任务', 'secondary')}`;
-    if (phase === 'confirm') return `<span class="task-status-line">${icon('branch')}请确认下面的操作</span>${button('live-back', '取消', 'text-button')}`;
-    if (phase === 'empty') return `<span class="task-status-line">尚未打开本地仓库</span>${button('open-scm', '打开 Source Control', 'primary')}`;
-    if (['ready', 'reviewing'].includes(phase) || !!s?.stagedCount) return `<span class="task-status-line">${icon('commit')}${s?.stagedCount || 0} 个文件等待审查</span><div class="footer-actions">${button('review-staged', '审查并提交', 'primary')}</div>`;
-    return `<span class="task-status-line">${icon('check')}${esc(footText || (s?.workingTreeCount ? `${s.workingTreeCount} 项未暂存改动` : '工作区干净'))}</span><div class="footer-actions">${button('review-staged', '查看暂存区', 'text-button')}</div>`;
+        : main('show-conflicts', '解决冲突', 'conflict-primary')}</div>`;
+    const busyLabel = running[phase];
+    if (busyLabel) return foot(line(esc(view.live.kind === 'resolving' ? `正在处理 ${view.live.path}` : busyLabel[0]), '<i class="spinner"></i>'),
+        main('busy', `<i class="spinner"></i>${busyLabel[1]}`, 'primary is-busy', 'disabled aria-busy="true"'));
+    if (phase === 'committed') return foot(line('改动已提交到本地', icon('check'), 'success'), button('live-back', '返回工作区', 'text-button') + main('inspect-commit', '查看提交', 'primary', `data-hash="${esc(view.live.kind === 'committed' ? view.live.hash || s?.headHash || '' : '')}"`));
+    if (phase === 'error') return foot(line('操作没有完成', icon('warning'), 'warning'), button('live-back', '返回任务', 'secondary'));
+    if (phase === 'confirm') return foot(line('请确认下面的操作', icon('branch')), button('live-back', '取消', 'text-button'));
+    if (phase === 'empty') return foot(line('尚未打开本地仓库'), main('open-scm', '打开 Source Control', 'primary'));
+    if (['ready', 'reviewing'].includes(phase) || !!s?.stagedCount) return foot(line(`${s?.stagedCount || 0} 个文件等待审查`, icon('commit')), main('review-staged', '审查并提交', 'primary'));
+    return foot(line(esc(footText || (s?.workingTreeCount ? `${s.workingTreeCount} 项未暂存改动` : '工作区干净')), icon('check')), main('review-staged', '查看暂存区', 'text-button'));
 }

@@ -94,10 +94,11 @@ h3 { font-size: 12.5px; font-weight: 600; color: var(--muted); margin: 18px 0 8p
 .task-state.ready { color: var(--accent); }
 .task-state.running i { animation: fade 1.3s ease-in-out infinite; }
 #graph { padding: 3px 12px 9px; max-height: 330px; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--border) var(--card); }
-.commit-tree { position: relative; min-width: 430px; min-height: var(--tree-height); }
-.tree-rail { position: absolute; top: 0; left: 0; pointer-events: none; }
-.commit-list { display: grid; grid-auto-rows: 30px; padding-left: var(--rail-width); }
-.commit-row { display: flex; align-items: center; justify-content: flex-start; gap: 6px; height: 30px; padding: 0 6px; width: 100%; min-width: 0; text-align: left; border: 0; border-radius: 6px; font-size: 13.5px; background: transparent; }
+.commit-tree { position: relative; min-width: 430px; transition: height .32s cubic-bezier(.2,.8,.2,1); }
+.tree-rail { position: absolute; top: 0; left: 0; pointer-events: none; overflow: visible; transition: height .32s cubic-bezier(.2,.8,.2,1); }
+.commit-list { position: relative; height: 100%; }
+/* Rows are placed by transform so keyed morphs slide them (see renderGraph). */
+.commit-row { position: absolute; top: 0; left: var(--rail-width); right: 0; display: flex; align-items: center; justify-content: flex-start; gap: 6px; height: 30px; padding: 0 6px; min-width: 0; text-align: left; border: 0; border-radius: 6px; font-size: 13.5px; background: transparent; transition: transform .32s cubic-bezier(.2,.8,.2,1), background .15s, color .3s; }
 .commit-row.selected { background: var(--accent-soft); }
 .commit-subject { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 50px; max-width: 58%; }
 .branch-tag { display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 215px; padding: 1px 5px; border-radius: 4px; background: color-mix(in srgb, var(--lane) 7%, var(--card)); color: color-mix(in srgb, var(--lane) 65%, var(--fg)); font: 11.5px/1.5 var(--mono); flex-shrink: 1; }
@@ -108,11 +109,12 @@ h3 { font-size: 12.5px; font-weight: 600; color: var(--muted); margin: 18px 0 8p
 .commit-row.ghost { color: var(--muted); }
 .commit-row.conflict .commit-subject { color: var(--warning); }
 .lane-0 { --lane: var(--lane-0); }.lane-1 { --lane: var(--lane-1); }.lane-2 { --lane: var(--lane-2); }.lane-3 { --lane: var(--lane-3); }.lane-4 { --lane: var(--lane-4); }.lane-5 { --lane: var(--lane-5); }
-.edge { fill: none; stroke: var(--lane); stroke-width: 1.6; opacity: .45; }
+.edge { fill: none; stroke: var(--lane); stroke-width: 1.6; opacity: .45; transition: d .32s cubic-bezier(.2,.8,.2,1), stroke .22s ease; }
+.node { transition: transform .32s cubic-bezier(.2,.8,.2,1); }
 .edge.pending { stroke-dasharray: 3 5; opacity: .35; }
 [data-phase=merging] .edge.pending { animation: flow 1.5s linear infinite; }
 .edge.join { stroke-dasharray: 800; stroke-dashoffset: 800; animation: join 1.2s ease forwards; }
-.dot { fill: var(--lane); stroke: var(--card); stroke-width: 1.5; }
+.dot { fill: var(--lane); stroke: var(--card); stroke-width: 1.5; transition: fill .22s ease, r .18s ease; }
 .ghost .dot { fill: var(--card); stroke: var(--muted); stroke-width: 1.5; }
 .conflict .dot { fill: var(--warning); stroke: var(--card); }
 .merge-ring { fill: none; stroke: var(--lane); stroke-width: 1; opacity: .7; }
@@ -456,7 +458,7 @@ textarea::placeholder { color: var(--muted); opacity: .65; }
 .skeleton-row span, .skeleton-row em { height: 8px; border-radius: 4px; background: linear-gradient(90deg, var(--soft), var(--border), var(--soft)); background-size: 200% 100%; animation: thread-shimmer 1.4s linear infinite; }
 @keyframes thread-shimmer { to { background-position: -200% 0; } }
 @keyframes thread-enter { from { opacity: .5; transform: translateY(12px) scale(.99); filter: blur(1.5px); } to { opacity: 1; transform: none; filter: blur(0); } }
-@keyframes thread-row-enter { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@keyframes thread-row-enter { from { opacity: 0; translate: 0 3px; } to { opacity: 1; translate: none; } }
 @keyframes thread-composer-enter { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 @container (max-width: 600px) {
   .native-confirm { flex-direction: column; align-items: flex-start; }
@@ -500,3 +502,22 @@ textarea::placeholder { color: var(--muted); opacity: .65; }
 }
 
 .working-changes header .text-button { padding: 2px 4px; font-size: 10.5px; }
+
+/* Motion driven by morph() in main.ts; m-* classes survive attribute sync. */
+#graph .commit-row.m-enter { animation: row-insert .45s cubic-bezier(.2,.8,.2,1) .2s both, row-glow 1s ease-out .2s both; }
+.node.m-enter .dot { animation: node-pop .32s cubic-bezier(.3,1.6,.5,1) both .2s; transform-box: fill-box; transform-origin: center; }
+.edge.m-enter { animation: edge-fade .4s ease-out both .1s; }
+#graph .m-exit, .m-exit { pointer-events: none; animation: row-exit .16s ease-in forwards; }
+#graph .commit-row.m-sweep { animation: lane-sweep .6s ease-out both; }
+@keyframes row-insert { from { opacity: 0; translate: 0 -6px; } 45% { opacity: 1; } to { opacity: 1; translate: none; } }
+@keyframes row-glow { 0%, 30% { background-color: #fbf1e6; } to { background-color: transparent; } }
+@keyframes node-pop { from { scale: 0; } to { scale: 1; } }
+@keyframes edge-fade { from { opacity: 0; } }
+@keyframes row-exit { to { opacity: 0; } }
+@keyframes lane-sweep { 30% { background-color: color-mix(in srgb, var(--lane) 11%, transparent); } to { background-color: transparent; } }
+.narrative-word { animation: word-in .24s ease-out both; }
+@keyframes word-in { from { opacity: 0; filter: blur(1.5px); translate: 0 2px; } to { opacity: 1; filter: none; translate: none; } }
+/* Busy main action: same slot and shape as the button it replaces. */
+button.is-busy, button.is-busy:disabled { background: var(--soft); color: var(--muted); opacity: 1; gap: 6px; }
+button.is-busy .spinner { width: 11px; height: 11px; }
+.footer-actions button { transition: background .18s ease, color .18s ease; }
