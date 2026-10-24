@@ -38,6 +38,27 @@ export async function run(): Promise<void> {
         assert.ok(snapshot?.branches.includes('feature'));
         checks.push('real getRefs supplies local branches');
 
+        // The shallow path assumes real state events for working tree edits and a structural key
+        // that stays equal when HEAD/refs did not move; otherwise it silently degrades to full reads.
+        await new Promise(resolve => setTimeout(resolve, 1000)); // pending full changes from refresh() fire first
+        const full = (await service.snapshot())!;
+        const shallowEvent = new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => { subscription.dispose(); reject(new Error('no shallow change event from the real host')); }, 15_000);
+            const subscription = service.onDidChange(change => {
+                if (change?.shallow) { clearTimeout(timer); subscription.dispose(); resolve(); }
+            });
+        });
+        const scratch = path.join(root, 'host-shallow.txt');
+        await fs.writeFile(scratch, 'draft\n');
+        await shallowEvent;
+        const shallow = service.shallowSnapshot();
+        assert.ok(shallow, 'real HEAD/refs/merge state keeps the structural key stable');
+        assert.equal(shallow.graph, full.graph);
+        assert.ok(shallow.workingTreeFiles?.some(file => file.path === 'host-shallow.txt'));
+        await fs.rm(scratch);
+        await service.refresh();
+        checks.push('real working tree edits take the shallow snapshot path');
+
         const config = vscode.workspace.getConfiguration('git', vscode.Uri.file(root));
         assert.equal(config.get('enableCommitSigning'), true);
         assert.equal(config.get('alwaysSignOff'), true);

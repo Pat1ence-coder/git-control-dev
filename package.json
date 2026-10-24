@@ -70,7 +70,7 @@
     "test": "npm run compile && node --test dist/test.js",
     "test:host": "npm run compile && node scripts/test-host.mjs",
     "vscode:prepublish": "npm run compile",
-    "test:ui": "npm run compile && node scripts/test-thread-ui.mjs"
+    "test:ui": "npm run compile && node scripts/test-thread-ui.mjs && node scripts/test-motion-ui.mjs"
   },
   "devDependencies": {
     "@types/node": "^18.19.0",
