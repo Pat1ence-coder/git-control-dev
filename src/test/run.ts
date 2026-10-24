@@ -123,6 +123,10 @@ test('live phase prioritizes operation state and pending merge', () => {
     assert.equal(livePhase(s, { kind: 'confirm', ref: 'feature' }), 'conflict');
     assert.equal(livePhase(s, { kind: 'resolving', path: 'a' }), 'resolving');
     assert.equal(livePhase({ ...s, conflicts: [] }, { kind: 'overview' }), 'ready');
+    // Rebase is finished in Source Control: never present it as a commit-ready merge.
+    const rebase = { conflicts: [], mergeHead: false, rebasing: true, stagedCount: 2 } as any;
+    assert.equal(livePhase(rebase, { kind: 'overview' }), 'rebasing');
+    assert.equal(livePhase({ ...rebase, conflicts: [{}] }, { kind: 'overview' }), 'conflict');
 });
 // Real temporary Git repository behind the small vscode.git interface double.
 // This exercises filesystem/index behavior without claiming Extension Host coverage.
@@ -282,6 +286,15 @@ test('GitService: real conflicts, resolution/staging, history diff, abort and wo
             Date.now = () => now() + 60_000;
             try { assert.equal(service.shallowSnapshot(), undefined, 'stale full snapshots are not reused'); }
             finally { Date.now = now; }
+        });
+        await t.test('suggested commit message fills an empty SCM box but never replaces a draft', async () => {
+            repo.inputBox.value = 'my own draft';
+            await service.suggestCommitMessage();
+            assert.equal(repo.inputBox.value, 'my own draft');
+            repo.inputBox.value = '  ';
+            await service.suggestCommitMessage();
+            assert.match(repo.inputBox.value, /^Merge branch into main/);
+            repo.inputBox.value = '';
         });
         await t.test('branch list and read-only preview keep HEAD unchanged', async () => {
             const current = (await service.snapshot())!;

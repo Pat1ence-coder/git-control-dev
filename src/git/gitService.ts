@@ -628,7 +628,9 @@ export class GitService implements vscode.Disposable {
     async suggestCommitMessage(guard?: WriteGuard): Promise<void> {
         const write = guard ?? await this.prepareWrite(), repo = write.repo, message = await this.gitFile(repo, 'MERGE_MSG');
         await write.check();
-        repo.inputBox.value = message || `Merge branch into ${repo.state.HEAD?.name || 'HEAD'}\n\n冲突已在 Generative Git 里解决。`;
+        // Never replace a message the user already typed in Source Control; just show it.
+        if (!repo.inputBox.value.trim())
+            repo.inputBox.value = message || `Merge branch into ${repo.state.HEAD?.name || 'HEAD'}\n\n冲突已在 Generative Git 里解决。`;
         await vscode.commands.executeCommand('workbench.view.scm');
     }
     private async reviewFingerprint(repo: Repository): Promise<string> {

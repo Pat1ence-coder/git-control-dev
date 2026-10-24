@@ -192,7 +192,7 @@ function render(): void {
     update('task-meta', chips + remoteActions + remoteMore + stats);
     const handoff = app.handoff;
     update('native-confirm', app.nativePending ? `<div class="native-confirm" role="status"><p>正在运行原生 ${nativeGitLabels[app.nativePending.action]} 流程，请查看编辑器提示…</p></div>` : handoff ? `<div class="native-confirm"><div><strong>${nativeGitLabels[handoff.kind]} 由编辑器原生 Git 完成</strong><p>将在当前仓库运行对应操作，遵循原生 Git 配置与确认流程。${handoff.kind === 'sync' ? 'Sync 会拉取并推送。' : ''}</p></div><div class="actions">${button('native-go', `继续 ${nativeGitLabels[handoff.kind]}`, 'primary', disabled)}${button('native-cancel', '取消', 'text-button')}</div></div>` : app.nativeFallback ? `<div class="native-confirm">${button('open-scm', '在 Source Control 中核对', 'text-button')}</div>` : '');
-    root.dataset.quick = app.snapshot && !preview && !app.reviewOpen && !app.detailOpen && !['confirm', 'abort-confirm', 'error'].includes(app.live.kind) ? 'true' : 'false';
+    root.dataset.quick = app.snapshot && !preview && !app.snapshot.rebasing && !app.reviewOpen && !app.detailOpen && !['confirm', 'abort-confirm', 'error'].includes(app.live.kind) ? 'true' : 'false';
     update('quick-context', `<span class="quick-chip">${icon('file')}${esc(repoName)}</span><span class="quick-chip">${icon('branch')}${esc(head)}</span>`);
     const quick = document.getElementById('quick-message') as HTMLTextAreaElement;
     const draft = drafts.get(draftKey()) || '';

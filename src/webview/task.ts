@@ -58,6 +58,7 @@ export function renderTaskControls(view: TaskView, footText?: string): string {
     if (phase === 'committed') return foot(line('改动已提交到本地', icon('check'), 'success'), button('live-back', '返回工作区', 'text-button') + main('inspect-commit', '查看提交', 'primary', `data-hash="${esc(view.live.kind === 'committed' ? view.live.hash || s?.headHash || '' : '')}"`));
     if (phase === 'error') return foot(line('操作没有完成', icon('warning'), 'warning'), button('live-back', '返回任务', 'secondary'));
     if (phase === 'confirm') return foot(line('请确认下面的操作', icon('branch')), button('live-back', '取消', 'text-button'));
+    if (phase === 'rebasing') return foot(line(esc(footText || '变基进行中'), icon('branch'), 'warning'), main('open-scm', '在 Source Control 继续', 'primary'));
     if (phase === 'empty') return foot(line('尚未打开本地仓库'), main('open-scm', '打开 Source Control', 'primary'));
     if (['ready', 'reviewing'].includes(phase) || !!s?.stagedCount) return foot(line(`${s?.stagedCount || 0} 个文件等待审查`, icon('commit')), main('review-staged', '审查并提交', 'primary'));
     return foot(line(esc(footText || (s?.workingTreeCount ? `${s.workingTreeCount} 项未暂存改动` : '工作区干净')), icon('check')), main('review-staged', '查看暂存区', 'text-button'));

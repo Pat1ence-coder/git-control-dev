@@ -13,7 +13,7 @@ const snapshot: Snapshot = {
     canMerge: true, canAbort: true, graph: { laneCount: 1, nodes: [], edges: [] }
 };
 
-function hostHarness(options: { busy?: boolean; mergeError?: Error; mergeWait?: Promise<void> } = {}) {
+function hostHarness(options: { busy?: boolean; mergeError?: Error; mergeWait?: Promise<void>; previewGone?: boolean } = {}) {
     const messages: ToWebview[] = [];
     let latest = snapshot;
     const calls: string[] = [];
@@ -25,7 +25,12 @@ function hostHarness(options: { busy?: boolean; mergeError?: Error; mergeWait?: 
         whenReady: async () => { },
         startupProblem: undefined,
         prepareWrite: async (_context: unknown, validate: () => void) => { validate(); return { repo: {}, check: async () => { validate(); }, assertCurrent: validate }; },
-        snapshot: async (previewRef?: string) => { calls.push(previewRef ? `snapshot:${previewRef}` : 'snapshot'); return snapshot; },
+        // Like GitService.snapshot(): a resolvable preview ref yields a preview; previewGone models a
+        // branch that was deleted/checked out or a repository switched from elsewhere.
+        snapshot: async (previewRef?: string) => {
+            calls.push(previewRef ? `snapshot:${previewRef}` : 'snapshot');
+            return previewRef && !options.previewGone ? { ...snapshot, preview: { ref: previewRef, name: previewRef.replace('refs/heads/', ''), graph: snapshot.graph } } : snapshot;
+        },
         select: async (id: string) => { calls.push(`select:${id}`); changes.fire(); },
         stageAll: async () => { calls.push('stageAll'); return 2; }
     }, {
@@ -54,7 +59,7 @@ function hostHarness(options: { busy?: boolean; mergeError?: Error; mergeWait?: 
         onDidDispose: disposed.event
     };
     provider.resolveWebviewView(view as any);
-    return { messages, calls, provider, view, sendRaw: (message: unknown) => incoming.fire(message),
+    return { messages, calls, provider, view, changes, sendRaw: (message: unknown) => incoming.fire(message),
         ticket: () => ({ context: { repoId: latest.repoId, headName: latest.headName, headHash: latest.headHash }, writeToken: latest.writeToken }),
         send: (message: any) => {
             const writes = ['merge', 'stage', 'resolve', 'abort-merge', 'native-stage-conflicts', 'commit-staged', 'stage-working-change', 'stage-all', 'suggest-commit'];
@@ -143,6 +148,21 @@ test('branch preview is read-only and refreshes without changing the repository'
         await host.send({ type: 'preview-current' }); await tick(); await tick();
         assert.ok(host.calls.includes('snapshot'));
     } finally { host.provider.dispose(); }
+});
+
+test('a preview that no longer resolves returns to the live view with writes restored', async () => {
+    const h = hostHarness({ previewGone: true });
+    try {
+        h.send({ type: 'ready' }); await tick(); await tick();
+        h.send({ type: 'preview-branch', ref: 'refs/heads/feature' }); await tick(); await tick();
+        assert.ok(h.calls.includes('snapshot:refs/heads/feature'));
+        assert.ok(h.ticket().writeToken, 'without a visible preview the page must not be silently read-only');
+        h.send({ type: 'merge', ref: 'feature', refHash: 'b'.repeat(40) }); await tick(); await tick();
+        assert.equal(h.calls.filter(c => c === 'merge').length, 1);
+        h.calls.length = 0;
+        h.changes.fire(); await tick(); await tick();
+        assert.deepEqual(h.calls.filter(c => c.startsWith('snapshot')), ['snapshot'], 'the stale ref is not requested again');
+    } finally { h.provider.dispose(); }
 });
 
 test('write requests cannot omit or change host authorization, and cannot replay a consumed token', async () => {

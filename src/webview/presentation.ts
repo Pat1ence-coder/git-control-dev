@@ -55,6 +55,9 @@ export function presentTask(input: { phase: string; snapshot: Snapshot | null; l
         p = view(`预览 ${s.preview.name}`, '只读预览', 'ready', `只读预览 ${s.preview.name} 的历史，不会切换 HEAD 或修改工作区。`);
     else if (phase === 'reviewing')
         p = view(`审查 ${s.stagedCount} 个已暂存文件`, '等待审查', 'ready', '逐文件检查实际暂存差异，再确认提交。不会自动推送。');
+    else if (s.rebasing && !s.conflicts.length)
+        p = view(`${s.headName} 变基进行中`, '变基中', 'warning',
+            '冲突已处理。变基需要在 Source Control 中继续或中止；这里不会直接提交。', '在 Source Control 中继续变基');
     else if (s.conflicts.length)
         p = view(`解决 ${s.conflicts.length} 个文件的冲突`, '存在冲突', 'warning',
             `${s.conflicts.slice(0, 3).map(f => f.path).join('、')}${s.conflicts.length > 3 ? ' 等文件' : ''} 存在冲突。先查看摘要，再展开完整代码选择解决方式。`, `${s.conflicts.length} 个文件存在冲突`);
@@ -70,7 +73,7 @@ export function presentTask(input: { phase: string; snapshot: Snapshot | null; l
     const pr = s.preview ? undefined : input.pullRequest;
     if (pr) {
         p.chips.push({ label: `#${pr.number}`, tone: 'neutral' });
-        if (live.kind === 'overview' && !['reviewing', 'committing', 'error'].includes(phase)) {
+        if (live.kind === 'overview' && !['reviewing', 'committing', 'error', 'rebasing'].includes(phase)) {
             p.title = `${pr.title} #${pr.number}`;
             p.status = { label: { open: 'Open', closed: 'Closed', merged: 'Merged' }[pr.state], tone: pr.state };
             p.narrative = remoteNarrative(s, pr);

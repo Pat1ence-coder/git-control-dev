@@ -16,7 +16,7 @@ function harness() {
     const messages: ToWebview[] = [], pending: ((result: PullRequestState) => void)[] = [];
     let shallow: Snapshot | undefined;
     const service = { onDidChange: changed.event, whenReady: async () => {},
-        snapshot: async () => snapshot, shallowSnapshot: () => shallow, matchesContext: (context: Snapshot) => sameContext(context, snapshot),
+        snapshot: async (previewRef?: string) => previewRef ? { ...snapshot, preview: { ref: previewRef, name: previewRef, graph: snapshot.graph } } : snapshot, shallowSnapshot: () => shallow, matchesContext: (context: Snapshot) => sameContext(context, snapshot),
         pullRequest: async () => new Promise<PullRequestState>(resolve => pending.push(resolve)),
         clearPullRequestCache() {} } as unknown as GitService;
     const provider = new GenerativeGitViewProvider({ extensionUri: Uri.file('/extension') } as any, service);

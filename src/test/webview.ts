@@ -71,6 +71,16 @@ test('quick composer opens review only, ignores IME/repeat and preserves literal
     assert.equal(ui.posted.some(m => m.type === 'commit-staged'), false);
 });
 
+test('rebase in progress hides the quick commit composer and hands off to Source Control', () => {
+    const ui = harness();
+    ui.message({ type: 'hydrate', snapshot: makeSnapshot({ stagedCount: 2, rebasing: true }) });
+    assert.equal(ui.phase(), 'rebasing');
+    assert.equal(ui.get('app').dataset.quick, 'false');
+    assert.match(ui.get('task-controls').innerHTML, /data-action="open-scm"/);
+    ui.message({ type: 'snapshot', snapshot: makeSnapshot({ stagedCount: 2, rebasing: false }) });
+    assert.equal(ui.get('app').dataset.quick, 'true');
+});
+
 test('quick drafts are isolated by repository and branch, and repo switches block premature review', () => {
     const ui = harness();
     const s = makeSnapshot();

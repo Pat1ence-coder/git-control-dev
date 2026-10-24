@@ -59,19 +59,29 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
     private async hydrate(): Promise<void> {
         const view = this.view;
         await this.git.whenReady();
-        const snapshot = await this.git.snapshot(this.previewRef);
+        const ref = this.previewRef;
+        const snapshot = await this.git.snapshot(ref);
         if (!view || view !== this.view) return;
         this.ready = true;
+        this.settlePreview(ref, snapshot);
         this.post({ type: 'hydrate', snapshot: this.withWriteTicket(snapshot), notice: this.git.startupProblem });
         this.refreshRemote(snapshot);
     }
     private async pushSnapshot(_force: boolean): Promise<void> {
         if (!this.ready) return;
         const view = this.view;
-        const snapshot = await this.git.snapshot(this.previewRef);
+        const ref = this.previewRef;
+        const snapshot = await this.git.snapshot(ref);
         if (!this.ready || view !== this.view) return;
+        this.settlePreview(ref, snapshot);
         this.post({ type: 'snapshot', snapshot: this.withWriteTicket(snapshot) });
         this.refreshRemote(snapshot);
+    }
+    /** A preview ref that no longer resolves (branch deleted or checked out, repository switched
+     *  from the sidebar) would leave the page without a preview banner yet read-only. Drop it,
+     *  unless the user already asked for another preview while this snapshot was read. */
+    private settlePreview(requested: string | undefined, snapshot: Snapshot | null): void {
+        if (requested && this.previewRef === requested && !snapshot?.preview) this.previewRef = undefined;
     }
     /** Working-tree-only change: same HEAD and refs, so PR state stays and GitHub is not re-read. */
     private async pushShallowSnapshot(): Promise<void> {

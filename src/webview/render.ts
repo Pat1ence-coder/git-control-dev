@@ -127,8 +127,11 @@ export function livePhase(snapshot: Snapshot | null, state: LiveState): string {
     if (!snapshot) return 'empty';
     if (['error', 'merging', 'resolving', 'committed'].includes(state.kind)) return state.kind;
     if (state.kind === 'abort-confirm') return 'confirm';
+    // Order matters: conflicts outrank a pending confirmation, which outranks the repository's
+    // steady state. A rebase is continued/aborted in Source Control (commitBlocker refuses it).
     if (snapshot.conflicts.length) return 'conflict';
     if (state.kind === 'confirm') return 'confirm';
+    if (snapshot.rebasing) return 'rebasing';
     return snapshot.mergeHead ? 'ready' : 'idle';
 }
 export function renderLiveStage(snapshot: Snapshot | null, state: LiveState, selectedPath?: string): string {

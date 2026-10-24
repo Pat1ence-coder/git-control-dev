@@ -26,6 +26,17 @@ test('presentation keeps real local operation failures and previews ahead of rem
     assert.deepEqual(clean.chips, []);
 });
 
+test('a rebase with resolved conflicts hands off to Source Control instead of offering a commit', () => {
+    const rebasing = { ...snapshot, rebasing: true, stagedCount: 2 };
+    const view = presentTask({ phase: 'rebasing', snapshot: rebasing, live: overview, pullRequest: { ...pr, state: 'open' } });
+    assert.equal(view.status.label, '变基中', 'local rebase outranks the remote PR state');
+    assert.match(view.narrative, /Source Control/);
+    const html = renderTaskControls({ phase: 'rebasing', snapshot: rebasing, live: overview, detailOpen: false, reviewOpen: false,
+        conflictsOpen: false, peekOpen: false, branchPickerOpen: false, busy: false });
+    assert.match(html, /data-action="open-scm"[^>]*data-key="main-action"/);
+    assert.ok(!html.includes('review-staged'));
+});
+
 test('conflict author text is escaped and explicitly described as file history, not blame', () => {
     const html = renderTaskControls({ phase: 'conflict', snapshot: { ...snapshot, conflicts: [{ path: '<file>', status: '双方修改', hunks: [
         { start: 1, end: 4, current: '<script>current</script>', incoming: '<img onerror=evil>',
