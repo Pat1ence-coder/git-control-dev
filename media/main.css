@@ -521,3 +521,21 @@ textarea::placeholder { color: var(--muted); opacity: .65; }
 button.is-busy, button.is-busy:disabled { background: var(--soft); color: var(--muted); opacity: 1; gap: 6px; }
 button.is-busy .spinner { width: 11px; height: 11px; }
 .footer-actions button { transition: background .18s ease, color .18s ease; }
+
+/* DeepSeek proposal surface: one compact thread section, no separate chat app. */
+#ai-panel { display: none; margin: 15px 3px 0; padding: 12px 14px 13px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); box-shadow: var(--shadow); }
+#app[data-ai=true] #ai-panel { display: block; }
+.ai-head { display: flex; align-items: center; gap: 7px; min-height: 18px; }
+.ai-brand { color: #6d5df6; font-size: 11px; letter-spacing: -.1px; }.ai-brand strong { color: var(--fg); font-weight: 600; }
+.ai-config { margin-left: auto; color: var(--muted); font: 9.5px/1.5 var(--mono); }
+.ai-compose { margin-top: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--soft); }.ai-compose:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.ai-compose textarea { display: block; width: 100%; min-height: 35px; max-height: 120px; padding: 8px 10px 0; border: 0; background: transparent; resize: vertical; font: 12px/1.6 var(--ui); }
+.ai-compose textarea:focus-visible { outline: none; }
+.ai-compose-foot { display: flex; align-items: center; gap: 6px; padding: 4px 7px 6px 9px; }.ai-compose-foot .ai-hint { flex: 1; color: var(--muted); font-size: 9px; }.ai-compose-foot .text-button { padding: 2px 4px; font-size: 9.5px; }.ai-compose-foot .primary { border-radius: 16px; padding: 4px 10px; font-size: 10px; }
+.ai-thread:empty { display: none; }.ai-thread { margin-top: 9px; }
+.ai-empty { margin: 0; color: var(--muted); font-size: 10.5px; line-height: 1.7; }
+.ai-thinking { border-top: 1px solid var(--border); padding-top: 7px; }.ai-thinking summary { cursor: pointer; color: var(--muted); font-size: 10px; }.ai-thinking pre { max-height: 180px; overflow: auto; margin: 6px 0 0; padding: 7px 9px; border-radius: 6px; background: var(--soft); color: var(--muted); font: 10px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ai-busy { display: flex; align-items: center; gap: 6px; margin-top: 7px; color: var(--muted); font-size: 10px; }.ai-busy .spinner { width: 11px; height: 11px; }
+.ai-proposal { padding-top: 2px; }.ai-reason { margin: 7px 0 0; color: var(--fg); font-size: 12.5px; line-height: 1.75; }.ai-analysis { margin: 7px 0 0; padding-left: 17px; color: var(--muted); font-size: 10.5px; line-height: 1.75; }.ai-analysis li::marker { color: #b4b9c3; }
+.ai-command { display: flex; align-items: center; gap: 7px; margin-top: 8px; padding: 7px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--soft); }.ai-command > span { flex: 0 0 auto; color: var(--muted); font-size: 9px; }.ai-command code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); font: 10px/1.5 var(--mono); }.ai-command .text-button { flex: 0 0 auto; padding: 1px 3px; font-size: 9px; }
+.ai-note { margin: 7px 0 0; color: var(--muted); font-size: 9px; }.ai-actions { margin-top: 6px; }

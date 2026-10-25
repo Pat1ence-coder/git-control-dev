@@ -8,6 +8,7 @@ import './security';
 import './github';
 import './remote-provider';
 import './presentation';
+import './ai';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';

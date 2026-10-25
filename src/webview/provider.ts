@@ -6,6 +6,7 @@ import { asHostMessage, type ToHost, type ToWebview, type WriteMessage, type Wri
 import { repositoryContext, sameContext, type RepositoryContext, type Snapshot, type PullRequestState } from '../shared/protocol';
 import { safePullRequestUrl } from '../git/github';
 import { runNativeGit } from '../git/nativeGitBridge';
+import { AiService } from '../ai/service';
 export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     private view?: vscode.WebviewView | vscode.WebviewPanel;
     private panel?: vscode.WebviewPanel;
@@ -17,8 +18,9 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
     private remoteLink?: { context: RepositoryContext; url: string };
     private connecting = false;
     private queue: Promise<void> = Promise.resolve();
+    private readonly aiRequests = new Map<number, AbortController>();
     private readonly subscriptions: vscode.Disposable[] = [];
-    constructor(private readonly context: vscode.ExtensionContext, private readonly git: GitService, private readonly operation = { busy: false }) {
+    constructor(private readonly context: vscode.ExtensionContext, private readonly git: GitService, private readonly operation = { busy: false }, private readonly ai?: AiService) {
         this.subscriptions.push(git.onDidChange(change => {
             if (change?.shallow) { void this.enqueue(() => this.pushShallowSnapshot()); return; }
             this.invalidateRemote();
@@ -66,6 +68,7 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
         this.settlePreview(ref, snapshot);
         this.post({ type: 'hydrate', snapshot: this.withWriteTicket(snapshot), notice: this.git.startupProblem });
         this.refreshRemote(snapshot);
+        void this.postAiConfig();
     }
     private async pushSnapshot(_force: boolean): Promise<void> {
         if (!this.ready) return;
@@ -89,6 +92,49 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
         const snapshot = this.git.shallowSnapshot(this.previewRef);
         if (!snapshot) { this.invalidateRemote(); return this.pushSnapshot(false); }
         this.post({ type: 'snapshot', snapshot: this.withWriteTicket(snapshot) });
+    }
+    async refreshAiConfig(): Promise<void> { await this.postAiConfig(); }
+    private async postAiConfig(): Promise<void> {
+        if (!this.ready) return;
+        try {
+            const config = this.ai ? await this.ai.config() : { configured: false, model: 'deepseek-v4-pro', effort: 'high' as const, thinking: true };
+            this.post({ type: 'ai-config', config });
+        } catch {
+            this.post({ type: 'ai-config', config: { configured: false, model: 'deepseek-v4-pro', effort: 'high', thinking: true } });
+        }
+    }
+    private abortAi(): void {
+        for (const controller of this.aiRequests.values()) controller.abort();
+        this.aiRequests.clear();
+    }
+    private async runAi(message: Extract<ToHost, { type: 'ai-ask' }>): Promise<void> {
+        const view = this.view;
+        const context = this.current;
+        const fail = (text: string) => { if (this.view === view) this.post({ type: 'ai-event', requestId: message.requestId, phase: 'error', error: text }); };
+        if (!view || !this.ready || !this.ai || !context || this.previewRef || !vscode.workspace.isTrusted || !this.git.matchesContext(context)) { fail('页面、仓库或分支状态已变化，请刷新后重试。'); return; }
+        if (this.operation.busy || this.aiRequests.size) { fail('Git 操作或另一个 AI 请求正在进行。'); return; }
+        const abort = new AbortController();
+        this.aiRequests.set(message.requestId, abort);
+        let thinking = '';
+        try {
+            const snapshot = await this.git.snapshot(this.previewRef);
+            if (!snapshot || snapshot.preview || !sameContext(this.current, context) || !sameContext(repositoryContext(snapshot), context) || !this.git.matchesContext(context)) throw new UserFacingError('仓库状态在 AI 请求开始前已变化，请刷新。');
+            this.post({ type: 'ai-event', requestId: message.requestId, phase: 'thinking', thinking: '' });
+            const proposal = await this.ai.propose({
+                prompt: message.prompt,
+                mode: message.mode,
+                snapshot,
+                signal: abort.signal,
+                onThinking: text => { thinking = text; if (this.view === view && this.ready) this.post({ type: 'ai-event', requestId: message.requestId, phase: 'thinking', thinking }); }
+            });
+            if (this.view !== view || !this.ready || !sameContext(this.current, context) || !this.git.matchesContext(context)) throw new UserFacingError('仓库状态在 AI 返回前已变化，请刷新。');
+            this.post({ type: 'ai-event', requestId: message.requestId, phase: 'done', proposal, thinking });
+        } catch (e) {
+            if (this.view === view) {
+                if (abort.signal.aborted) this.post({ type: 'ai-event', requestId: message.requestId, phase: 'cancelled', error: 'AI 请求已取消。' });
+                else this.post({ type: 'ai-event', requestId: message.requestId, phase: 'error', error: describeGitError(e) });
+            }
+        } finally { this.aiRequests.delete(message.requestId); }
     }
     private invalidateRemote(): void {
         this.remoteVersion++;
@@ -209,6 +255,13 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
             await this.enqueue(() => this.hydrate());
             return;
         }
+        if (message.type === 'ai-set-key') {
+            await vscode.commands.executeCommand('generativeGit.setDeepSeekKey');
+            await this.postAiConfig();
+            return;
+        }
+        if (message.type === 'ai-cancel') { this.aiRequests.get(message.requestId)?.abort(); return; }
+        if (message.type === 'ai-ask') { void this.runAi(message); return; }
         if (message.type === 'copy') {
             await vscode.env.clipboard.writeText(message.text);
             this.notify('已复制，可以粘贴到聊天。');
@@ -229,6 +282,7 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
             return;
         }
         if (message.type === 'preview-branch') {
+            this.abortAi();
             if (this.operation.busy) throw new UserFacingError('Git 操作进行中，请稍后切换预览。');
             this.writeTicket = undefined;
             this.invalidateRemote();
@@ -237,6 +291,7 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
             return;
         }
         if (message.type === 'preview-current') {
+            this.abortAi();
             if (this.operation.busy) throw new UserFacingError('Git 操作进行中，请稍后切换预览。');
             this.writeTicket = undefined;
             this.invalidateRemote();
@@ -270,6 +325,7 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
                 return;
             }
             case 'select-repo':
+                this.abortAi();
                 this.writeTicket = undefined;
                 if (this.operation.busy)
                     throw new UserFacingError('Git 操作进行中，请稍候再切换仓库。');
@@ -314,5 +370,5 @@ export class GenerativeGitViewProvider implements vscode.WebviewViewProvider, vs
         const script = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview.js'));
         return `<!DOCTYPE html><html lang="zh-Hans"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${css}"><title>Generative Git</title></head><body><div id="app"></div><script nonce="${nonce}" src="${script}"></script></body></html>`;
     }
-    dispose(): void { this.writeTicket = undefined; this.ready = false; this.view = undefined; this.invalidateRemote(); this.current = undefined; this.subscriptions.forEach(d => d.dispose()); }
+    dispose(): void { this.abortAi(); this.writeTicket = undefined; this.ready = false; this.view = undefined; this.invalidateRemote(); this.current = undefined; this.subscriptions.forEach(d => d.dispose()); }
 }

@@ -1,4 +1,5 @@
 import type { GraphModel } from './model';
+import type { AiConfig, AiEvent, AiMode } from './ai';
 export type Strategy = 'current' | 'incoming' | 'both' | 'ai';
 export const nativeGitActions = ['push', 'pull', 'fetch', 'sync', 'publish'] as const;
 export type NativeGitAction = typeof nativeGitActions[number];
@@ -142,7 +143,15 @@ export type WriteAction = {
 export interface WriteTicket { context: RepositoryContext; writeToken: string }
 export type WriteMessage = WriteAction & WriteTicket;
 export type ToHost = WriteMessage | {
-    type: 'ready' | 'refresh' | 'open-scm' | 'open-workbench' | 'preview-current';
+    type: 'ready' | 'refresh' | 'open-scm' | 'open-workbench' | 'preview-current' | 'ai-set-key';
+} | {
+    type: 'ai-ask';
+    requestId: number;
+    prompt: string;
+    mode: AiMode;
+} | {
+    type: 'ai-cancel';
+    requestId: number;
 } | {
     type: 'connect-github' | 'refresh-github' | 'open-pull-request';
     context: RepositoryContext;
@@ -172,7 +181,10 @@ export type ToHost = WriteMessage | {
     path?: string;
     requestId: number;
 };
-export type ToWebview = PullRequestMessage | {
+export type ToWebview = PullRequestMessage | AiEvent | {
+    type: 'ai-config';
+    config: AiConfig;
+} | {
     type: 'native-git-result';
     requestToken: string;
     context: RepositoryContext;
@@ -262,6 +274,14 @@ export function asHostMessage(value: unknown): ToHost | undefined {
         }
     }
     switch (m.type) {
+        case 'ai-set-key': return { type: 'ai-set-key' };
+        case 'ai-ask':
+            if (Number.isSafeInteger(m.requestId) && str('prompt', 4000) && (m.mode === 'manual' || m.mode === 'takeover'))
+                return { type: 'ai-ask', requestId: m.requestId as number, prompt: m.prompt as string, mode: m.mode };
+            return;
+        case 'ai-cancel':
+            if (Number.isSafeInteger(m.requestId)) return { type: 'ai-cancel', requestId: m.requestId as number };
+            return;
         case 'connect-github':
         case 'refresh-github':
         case 'open-pull-request': {

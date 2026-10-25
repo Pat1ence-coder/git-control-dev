@@ -1,4 +1,5 @@
 import type { ToHost, ToWebview, Snapshot, Strategy, CommitDetail, PullRequestState, RepositoryContext, NativeGitAction, WriteAction, WriteTicket } from '../shared/protocol';
+import type { AiConfig, AiProposal } from '../shared/ai';
 import { esc } from '../shared/html';
 import { button, icon, renderGraph, renderLiveStage, renderBranchPopover, livePhase, renderCommitDetail, renderReview, renderWorkingTree, type ReviewState, type LiveState } from './render';
 import { version } from '../../package.json';
@@ -24,12 +25,14 @@ const app: {
     selectedPath?: string; notice?: { text: string; level: string };
     detailOpen: boolean; detail?: CommitDetail; detailHash?: string; detailLoading: boolean; detailError?: string;
     reviewOpen: boolean; review: ReviewState; requestId: number; conflictsOpen: boolean; peekOpen: boolean; branchPickerOpen: boolean;
+    ai: { config?: AiConfig; prompt: string; requestId?: number; phase: 'idle' | 'thinking' | 'done' | 'error' | 'cancelled'; thinking: string; content: string; proposal?: AiProposal; error?: string };
 } = {
     booted: false, snapshot: null, live: { kind: 'overview' },
-    detailOpen: false, detailLoading: false, reviewOpen: false, review: freshReview(), requestId: 0, conflictsOpen: false, peekOpen: false, branchPickerOpen: false
+    detailOpen: false, detailLoading: false, reviewOpen: false, review: freshReview(), requestId: 0, conflictsOpen: false, peekOpen: false, branchPickerOpen: false,
+    ai: { prompt: '', phase: 'idle', thinking: '', content: '' }
 };
 const root = document.getElementById('app')!;
-root.innerHTML = `<header id="toolbar"></header><main class="task-workspace"><div id="task-context"></div><article id="task-card" class="task-card" aria-label="Git 任务"><header id="task-heading"></header><div id="branch-popover"></div><div id="graph"></div><div id="pr-checks"></div><div id="task-notice"></div><section id="stage" aria-label="任务详情"></section><div id="task-controls" class="task-controls"></div><section id="working-changes" aria-label="未暂存更改"></section></article><p id="task-explanation"></p><div id="task-meta"></div><section id="native-confirm" aria-label="原生远端操作确认"></section><section id="quick-composer" class="quick-composer" aria-label="快速提交"><label for="quick-message" class="sr-only">提交说明</label><textarea id="quick-message" rows="1" maxlength="20000" placeholder="写提交说明，或直接审查暂存区…"></textarea><div class="quick-tools"><div id="quick-context"></div><span class="quick-hint">本地操作，不自动推送</span>${button('quick-review', '审查并提交', 'primary')}</div></section></main><footer id="status-bar"></footer><div id="announcer" class="sr-only" aria-live="polite"></div>`;
+root.innerHTML = `<header id="toolbar"></header><main class="task-workspace"><div id="task-context"></div><article id="task-card" class="task-card" aria-label="Git 任务"><header id="task-heading"></header><div id="branch-popover"></div><div id="graph"></div><div id="pr-checks"></div><div id="task-notice"></div><section id="stage" aria-label="任务详情"></section><div id="task-controls" class="task-controls"></div><section id="working-changes" aria-label="未暂存更改"></section></article><p id="task-explanation"></p><div id="task-meta"></div><section id="ai-panel" class="ai-panel" aria-label="DeepSeek AI"><header class="ai-head"><span class="ai-brand">✦ <strong>AI</strong></span><span id="ai-config" class="ai-config"></span></header><div class="ai-compose"><textarea id="ai-prompt" rows="2" maxlength="4000" placeholder="让 AI 分析当前分支…"></textarea><div class="ai-compose-foot"><span id="ai-hint" class="ai-hint"></span><button data-action="ai-set-key" class="text-button">设置 Key</button><button data-action="ai-ask" class="primary">发送</button></div></div><div id="ai-thread" class="ai-thread"></div></section><section id="native-confirm" aria-label="原生远端操作确认"></section><section id="quick-composer" class="quick-composer" aria-label="快速提交"><label for="quick-message" class="sr-only">提交说明</label><textarea id="quick-message" rows="1" maxlength="20000" placeholder="写提交说明，或直接审查暂存区…"></textarea><div class="quick-tools"><div id="quick-context"></div><span class="quick-hint">本地操作，不自动推送</span>${button('quick-review', '审查并提交', 'primary')}</div></section></main><footer id="status-bar"></footer><div id="announcer" class="sr-only" aria-live="polite"></div>`;
 const htmlCache = new Map<string, string>();
 let lastPhase = '';
 const post = (message: ToHost) => { api?.postMessage(message); };
@@ -124,6 +127,61 @@ function phase(): string {
 }
 function draftKey(s = app.snapshot): string { return JSON.stringify([s?.repoId, s?.headName]); }
 function clearRemote(): void { app.pullRequest = undefined; app.handoff = undefined; app.nativeFallback = false; }
+function resetAi(): void {
+    app.ai = { config: app.ai.config, prompt: '', phase: 'idle', thinking: '', content: '' };
+}
+function aiProposalBody(p: AiProposal): string {
+    const steps = p.analysis.length ? `<ol class="ai-analysis">${p.analysis.map(x => `<li>${esc(x)}</li>`).join('')}</ol>` : '';
+    const command = p.command ? `<div class="ai-command"><span>建议命令</span><code>${esc(p.command)}</code>${button('copy-ai', '复制', 'text-button', `data-text="${esc(p.command)}"`)}</div>` : '<div class="ai-command"><span>建议</span><span>当前状态没有可执行操作。</span></div>';
+    return `<div class="ai-proposal"><p class="ai-reason">${esc(p.reason)}</p>${steps}${command}<p class="ai-note">这是提案，不会自动执行。${p.action === 'none' ? '' : '执行前仍需你确认。'}</p></div>`;
+}
+function renderAi(): void {
+    const config = app.ai.config;
+    const configured = !!config?.configured;
+    const active = app.ai.phase === 'thinking';
+    const ai = app.ai;
+    update('ai-config', !config ? '读取配置…' : configured ? `${esc(config.model)} · thinking ${esc(config.effort)}` : '未配置');
+    update('ai-hint', !config ? '' : configured ? (config.thinking ? 'DeepSeek thinking 已开启' : 'DeepSeek thinking 已关闭') : '先设置 DeepSeek API Key');
+    const prompt = document.getElementById('ai-prompt') as HTMLTextAreaElement | null;
+    if (prompt) {
+        if (document.activeElement !== prompt && prompt.value !== ai.prompt) prompt.value = ai.prompt;
+        prompt.disabled = !configured || active;
+        prompt.placeholder = !configured ? '先设置 DeepSeek API Key…' : active ? '正在等待 DeepSeek…' : '让 AI 分析当前分支…';
+    }
+    const ask = root.querySelector<HTMLButtonElement>('[data-action="ai-ask"]');
+    if (ask) { ask.disabled = !configured || active; ask.textContent = active ? '思考中…' : '发送'; }
+    const keyButton = root.querySelector<HTMLButtonElement>('[data-action="ai-set-key"]');
+    if (keyButton) keyButton.textContent = configured ? '更换 Key' : '设置 Key';
+    let body = '';
+    if (!configured) body = '<p class="ai-empty">配置 DeepSeek API Key 后，可以让 AI 根据当前仓库状态生成提交、Fetch、Push 或 Merge 提案。</p>';
+    else if (ai.phase === 'thinking') body = `<details class="ai-thinking" open><summary>思考过程${ai.thinking ? '' : ' · 等待中'}</summary><pre>${esc(ai.thinking || '正在请求 DeepSeek…')}</pre></details><div class="ai-busy"><i class="spinner"></i>正在分析</div><div class="ai-actions">${button('ai-cancel', '取消', 'text-button')}</div>`;
+    else if (ai.phase === 'done' && ai.proposal) body = `${ai.thinking ? `<details class="ai-thinking"><summary>思考过程</summary><pre>${esc(ai.thinking)}</pre></details>` : ''}${aiProposalBody(ai.proposal)}`;
+    else if (ai.phase === 'error' || ai.phase === 'cancelled') body = `<div class="notice ${ai.phase === 'error' ? 'error' : ''}" role="status">${esc(ai.error || (ai.phase === 'cancelled' ? 'AI 请求已取消。' : 'AI 请求失败。'))}</div>`;
+    else body = '<p class="ai-empty">可以让 AI 根据当前分支、暂存区和 upstream 状态给出下一步建议。</p>';
+    update('ai-thread', body);
+    root.dataset.ai = app.snapshot && !app.snapshot.preview && configured ? 'true' : 'false';
+}
+function askAi(): void {
+    const prompt = app.ai.prompt.trim();
+    if (!prompt || app.ai.phase === 'thinking' || !app.ai.config?.configured) return;
+    const requestId = ++app.requestId + 1000000;
+    app.ai = { ...app.ai, requestId, phase: 'thinking', thinking: '', content: '', proposal: undefined, error: undefined };
+    post({ type: 'ai-ask', requestId, prompt, mode: 'manual' });
+    render();
+}
+function cancelAi(): void {
+    if (app.ai.requestId !== undefined) post({ type: 'ai-cancel', requestId: app.ai.requestId });
+    app.ai = { ...app.ai, phase: 'cancelled', error: 'AI 请求已取消。' };
+    render();
+}
+async function copyAi(text: string): Promise<void> {
+    if (api) post({ type: 'copy', text });
+    else {
+        try { await navigator.clipboard.writeText(text); app.notice = { text: '命令已复制。', level: 'info' }; }
+        catch { app.notice = { text: '浏览器未允许复制。', level: 'error' }; }
+        render();
+    }
+}
 function render(): void {
     if (!app.peekOpen) app.peekPinned = false;
     const current = phase(); root.dataset.phase = current;
@@ -190,6 +248,7 @@ function render(): void {
         ? `<details class="remote-more"><summary>更多</summary><div class="remote-menu">${moreRemote.map(remoteButton).join('')}</div></details>`
         : '';
     update('task-meta', chips + remoteActions + remoteMore + stats);
+    renderAi();
     const handoff = app.handoff;
     update('native-confirm', app.nativePending ? `<div class="native-confirm" role="status"><p>正在运行原生 ${nativeGitLabels[app.nativePending.action]} 流程，请查看编辑器提示…</p></div>` : handoff ? `<div class="native-confirm"><div><strong>${nativeGitLabels[handoff.kind]} 由编辑器原生 Git 完成</strong><p>将在当前仓库运行对应操作，遵循原生 Git 配置与确认流程。${handoff.kind === 'sync' ? 'Sync 会拉取并推送。' : ''}</p></div><div class="actions">${button('native-go', `继续 ${nativeGitLabels[handoff.kind]}`, 'primary', disabled)}${button('native-cancel', '取消', 'text-button')}</div></div>` : app.nativeFallback ? `<div class="native-confirm">${button('open-scm', '在 Source Control 中核对', 'text-button')}</div>` : '');
     root.dataset.quick = app.snapshot && !preview && !app.snapshot.rebasing && !app.reviewOpen && !app.detailOpen && !['confirm', 'abort-confirm', 'error'].includes(app.live.kind) ? 'true' : 'false';
@@ -270,8 +329,12 @@ function inspect(hash: string, path?: string): void {
     render();
 }
 function action(name: string, element: HTMLElement): void {
-    if (busy() && !['refresh', 'open-workbench'].includes(name)) return;
+    if (busy() && !['refresh', 'open-workbench', 'ai-set-key'].includes(name)) return;
     switch (name) {
+        case 'ai-ask': askAi(); break;
+        case 'ai-cancel': cancelAi(); break;
+        case 'ai-set-key': post({ type: 'ai-set-key' }); break;
+        case 'copy-ai': void copyAi(element.dataset.text || ''); break;
         case 'resolve': resolveLive(element.dataset.strategy as Strategy); break;
         case 'peek-conflicts':
             app.peekPinned = !app.peekPinned; app.peekOpen = app.peekPinned; app.peekSuppressed = !app.peekPinned;
@@ -392,6 +455,7 @@ root.addEventListener('focusout', event => {
 });
 root.addEventListener('input', event => {
     const el = event.target as HTMLTextAreaElement;
+    if (el.id === 'ai-prompt') { app.ai.prompt = el.value.slice(0, 4000); return; }
     if (el.id === 'quick-message') {
         if (app.snapshot && !busy()) drafts.set(draftKey(), el.value.slice(0, 20000));
         return;
@@ -413,6 +477,7 @@ root.addEventListener('change', event => {
 });
 root.addEventListener('keydown', event => {
     const target = event.target as HTMLElement;
+    if (target.id === 'ai-prompt' && event.key === 'Enter' && !event.shiftKey && !event.isComposing && !event.repeat) { event.preventDefault(); askAi(); return; }
     if (target.id === 'quick-message' && event.key === 'Enter' && !event.shiftKey && !event.isComposing && !event.repeat && !event.ctrlKey && !event.altKey && !event.metaKey) {
         event.preventDefault(); quickReview();
     }
@@ -439,17 +504,25 @@ window.addEventListener('message', (event: MessageEvent<ToWebview>) => {
     const m = event.data;
     if (!m || typeof m !== 'object') return;
     switch (m.type) {
-        case 'hydrate': clearRemote(); app.switching = false; app.booted = true; app.snapshot = m.snapshot; if (m.notice) app.notice = { text: m.notice, level: 'info' }; break;
+        case 'hydrate': clearRemote(); app.switching = false; app.booted = true; app.snapshot = m.snapshot; resetAi(); if (m.notice) app.notice = { text: m.notice, level: 'info' }; break;
         case 'snapshot': {
             const previous = app.snapshot; app.snapshot = m.snapshot; app.switching = false;
             if (!sameContext(previous, m.snapshot) || previous?.preview?.ref !== m.snapshot?.preview?.ref) {
                 clearRemote(); app.confirmation = undefined;
                 if (['confirm', 'abort-confirm'].includes(app.live.kind)) app.live = { kind: 'overview' };
             }
-            if (previous?.repoId !== m.snapshot?.repoId || previous?.headName !== m.snapshot?.headName) { closeDetail(); resetReview(); app.live = { kind: 'overview' }; app.conflictsOpen = false; app.peekOpen = false; app.branchPickerOpen = false; app.selectedPath = undefined; }
+            if (previous?.repoId !== m.snapshot?.repoId || previous?.headName !== m.snapshot?.headName || previous?.preview?.ref !== m.snapshot?.preview?.ref) { closeDetail(); resetReview(); resetAi(); app.live = { kind: 'overview' }; app.conflictsOpen = false; app.peekOpen = false; app.branchPickerOpen = false; app.selectedPath = undefined; }
             if (app.reviewOpen && !app.review.committing && previous && (previous.headHash !== m.snapshot?.headHash || previous.stagedCount !== m.snapshot?.stagedCount)) app.review.error = '仓库状态已变化，请重新加载审查。';
             break;
         }
+        case 'ai-config': app.ai.config = m.config; if (!m.config.configured && app.ai.phase === 'thinking') resetAi(); break;
+        case 'ai-event':
+            if (m.requestId !== app.ai.requestId) return;
+            if (m.phase === 'thinking') { app.ai = { ...app.ai, phase: 'thinking', thinking: m.thinking || '', error: undefined }; }
+            else if (m.phase === 'done') { app.ai = { ...app.ai, phase: 'done', proposal: m.proposal, thinking: m.thinking || app.ai.thinking, content: m.content || '', error: undefined }; }
+            else if (m.phase === 'error') { app.ai = { ...app.ai, phase: 'error', error: m.error || 'AI 请求失败。' }; }
+            else if (m.phase === 'cancelled') { app.ai = { ...app.ai, phase: 'cancelled', error: m.error || 'AI 请求已取消。' }; }
+            break;
         case 'notice': app.notice = m; if (m.level === 'error') app.switching = false; break;
         case 'pull-request':
             if (app.switching || app.snapshot?.preview || !sameContext(app.snapshot, m.context)) return;

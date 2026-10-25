@@ -13,7 +13,7 @@ const snapshot: Snapshot = {
     canMerge: true, canAbort: true, graph: { laneCount: 1, nodes: [], edges: [] }
 };
 
-function hostHarness(options: { busy?: boolean; mergeError?: Error; mergeWait?: Promise<void>; previewGone?: boolean } = {}) {
+function hostHarness(options: { busy?: boolean; mergeError?: Error; mergeWait?: Promise<void>; previewGone?: boolean; ai?: unknown } = {}) {
     const messages: ToWebview[] = [];
     let latest = snapshot;
     const calls: string[] = [];
@@ -32,7 +32,8 @@ function hostHarness(options: { busy?: boolean; mergeError?: Error; mergeWait?: 
             return previewRef && !options.previewGone ? { ...snapshot, preview: { ref: previewRef, name: previewRef.replace('refs/heads/', ''), graph: snapshot.graph } } : snapshot;
         },
         select: async (id: string) => { calls.push(`select:${id}`); changes.fire(); },
-        stageAll: async () => { calls.push('stageAll'); return 2; }
+        stageAll: async () => { calls.push('stageAll'); return 2; },
+        matchesContext: () => true
     }, {
         get(target, key) {
             if (key in target) return (target as Record<string | symbol, unknown>)[key];
@@ -48,7 +49,7 @@ function hostHarness(options: { busy?: boolean; mergeError?: Error; mergeWait?: 
             };
         }
     }) as unknown as GitService;
-    const provider = new GenerativeGitViewProvider({ extensionUri: Uri.file('/extension') } as any, service, { busy: !!options.busy });
+    const provider = new GenerativeGitViewProvider({ extensionUri: Uri.file('/extension') } as any, service, { busy: !!options.busy }, options.ai as any);
     const view = {
         webview: {
             options: {}, html: '', cspSource: 'vscode-webview:',
@@ -222,5 +223,31 @@ test('stage-all uses the host write guard and reports staged files', async () =>
         await host.send({ type: 'stage-all' }); await tick(); await tick();
         assert.ok(host.calls.includes('stageAll'));
         assert.ok(host.messages.some(m => m.type === 'live-result' && m.kind === 'staged' && /2 个未暂存文件/.test(m.text || '')));
+    } finally { host.provider.dispose(); }
+});
+
+
+test('deepseek config is sent after hydrate and an AI request streams a validated proposal', async () => {
+    const calls: string[] = [];
+    const ai = {
+        config: async () => ({ configured: true, model: 'deepseek-v4-pro', effort: 'high', thinking: true }),
+        propose: async (input: any) => {
+            calls.push(input.prompt);
+            input.onThinking?.('读取当前分支。');
+            return {
+                action: 'fetch', analysis: ['读取 upstream'], reason: '先同步远端引用。',
+                fetch: { remote: 'origin' }, command: 'git fetch origin'
+            };
+        }
+    };
+    const host = hostHarness({ ai });
+    try {
+        await host.send({ type: 'ready' }); await tick(); await tick();
+        assert.ok(host.messages.some(m => m.type === 'ai-config' && m.config.configured));
+        host.messages.length = 0;
+        await host.send({ type: 'ai-ask', requestId: 9001, prompt: '先同步远端', mode: 'manual' }); await tick(); await tick();
+        assert.deepEqual(calls, ['先同步远端']);
+        assert.ok(host.messages.some(m => m.type === 'ai-event' && m.phase === 'thinking' && m.requestId === 9001));
+        assert.ok(host.messages.some(m => m.type === 'ai-event' && m.phase === 'done' && m.requestId === 9001 && m.proposal?.action === 'fetch'));
     } finally { host.provider.dispose(); }
 });

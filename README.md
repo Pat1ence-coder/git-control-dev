@@ -14,6 +14,7 @@
 - **本地备份**：保存冲突修改前的完整原文，支持打开和手动清理备份。
 - **任务卡片**：紧凑提交图、真实状态说明、加载骨架和状态动效；下方快速提交框先进入暂存审查，支持按仓库和分支保留会话内草稿。
 - **GitHub PR / 检查**：读取 `origin` 对应的 github.com 仓库当前分支的 PR 和 check runs。通过编辑器连接 GitHub，支持手动刷新及打开 PR；预览其他分支时隐藏当前分支的 PR。
+- **DeepSeek AI 建议**：配置 API Key 后，可让 AI 根据当前分支、暂存区和 upstream 状态生成提交、Fetch、Push 或 Merge 提案；思考过程和最终建议命令可见、可折叠，但不会自动执行。
 - **原生 Git 操作**：Push、Pull、Fetch、Sync、Publish 分别调用对应的编辑器 SCM 命令。宿主确认中显示仓库路径，随后使用原生 Git 配置、认证和交互；命令不可用时提供 Source Control 入口。
 
 ## 安装与打开
@@ -47,7 +48,7 @@ python3 scripts/package-vsix.py
 
 普通文本冲突可以选择解决策略，检查完整差异后点击 **应用并暂存**。也可打开官方合并编辑器手动处理。删除、重命名、二进制等复杂冲突可使用 **官方暂存冲突（全部）**；该操作处理当前仓库的全部冲突，官方流程会提示保留或删除，中途取消可能保留已完成的部分暂存。
 
-“AI 草拟”使用本地规则，不调用外部模型，结果需要人工审查。
+“AI 草拟”是冲突解决的本地规则，不是 DeepSeek 请求，结果需要人工审查。DeepSeek 只在用户主动发送 AI 提问时调用。
 
 ### 审查与提交
 
@@ -83,10 +84,13 @@ Push、Pull、Fetch、Sync、Publish 使用不同的原生命令，Push 不会�
 | Generative Git: 刷新仓库 | 更新仓库状态 |
 | Generative Git: 打开冲突修改备份 | 查看保存的冲突原文 |
 | Generative Git: 清理冲突修改备份 | 确认后删除本扩展保存的备份记录 |
+| Generative Git: 设置 DeepSeek API Key | 将 Key 写入 VS Code SecretStorage，不写入设置或 webview |
+| Generative Git: 清除 DeepSeek API Key | 删除本机保存的 DeepSeek Key |
 
 ## 数据与隐私
 
-- 本插件不调用外部模型。用户执行 Push、Sync 或 Publish 时，原生 Git 会按仓库配置传输提交对象；Fetch/Pull 会访问配置的远端。GitHub 查询功能单独使用编辑器会话向固定的 `https://api.github.com` 发出只读 GET 请求，包含仓库、分支和提交标识。查询授权使用 GitHub `repo` scope（用于访问私有仓库），令牌不会传给 Webview、写入配置或输出日志，也不会作为参数交给 Git 传输。
+- 默认没有外部模型请求。只有用户主动发送 AI 提问时，扩展宿主才会向固定的 `https://api.deepseek.com/chat/completions` 发送当前仓库的分支、HEAD、暂存/未暂存计数、冲突状态和本地分支名；默认不发送源码、diff 或文件路径。DeepSeek API Key 保存在 VS Code SecretStorage，不写入设置、Webview 或日志。
+- 用户执行 Push、Sync 或 Publish 时，原生 Git 会按仓库配置传输提交对象；Fetch/Pull 会访问配置的远端。GitHub 查询功能单独使用编辑器会话向固定的 `https://api.github.com` 发出只读 GET 请求，包含仓库、分支和提交标识。查询授权使用 GitHub `repo` scope（用于访问私有仓库），令牌不会传给 Webview、写入配置或输出日志，也不会作为参数交给 Git 传输。
 - GitHub 请求拒绝重定向，限制为总计 10 秒及每次响应 2 MiB；外部响应先校验，再转换为界面数据。浏览器打开地址由宿主根据校验过的仓库和 PR 编号构造。工作区文件、认证令牌及远端原始错误不会进入这些链接。
 - 官方 Git 操作遵循宿主及仓库设置，可能运行已配置的 hooks 和错误处理器。共享操作锁只协调本扩展，不能锁住终端、其他扩展或原生流程内部的后续变化。GitHub 查询不会执行 push、pull、创建或合并 PR。
 - 冲突备份保存在本机扩展存储目录，包含文件绝对路径和完整原文，可能包含敏感信息。备份为明文，不自动过期，可通过清理命令删除。
@@ -100,11 +104,11 @@ Push、Pull、Fetch、Sync、Publish 使用不同的原生命令，Push 不会�
 
 本地文本冲突处理限制为 180 KB，差异显示最多 180,000 个字符。超大文件、二进制及特殊文件类型应使用官方处理流程。无法验证关联的 Git 元数据布局会停止操作。
 
-PR 写操作，以及 rebase、cherry-pick、revert 等完整流程，请使用编辑器内置源代码管理或其他相应工具。网络命令是对原生 SCM 的适配，不提供超出宿主的严格事务、自动回滚或可靠传输取消保证。
+PR 写操作，以及 rebase、cherry-pick、revert 等完整流程，请使用编辑器内置源代码管理或其他相应工具。DeepSeek 只生成提案和建议命令，不自动执行提交、Fetch、Push 或 Merge；执行仍走现有审查、原生 SCM 和确认流程。网络命令是对原生 SCM 的适配，不提供超出宿主的严格事务、自动回滚或可靠传输取消保证。
 
 ## 开发验证
 
-`npm test` 编译并运行本地 Git、Webview、消息协议及 GitHub 模拟响应测试。GitHub 测试不使用真实账号或网络。
+`npm test` 编译并运行本地 Git、Webview、消息协议、DeepSeek 模拟 SSE 及 GitHub 模拟响应测试。DeepSeek 和 GitHub 测试都不使用真实账号或网络。
 
 `npm run test:ui` 使用本机已安装的 Playwright / Chromium 运行真实浏览器回归（Playwright 的 Node.js 要求独立于扩展构建要求）。可用 `GENERATIVE_GIT_PLAYWRIGHT` 指向 Playwright 的 `index.mjs`，`PLAYWRIGHT_BROWSERS_PATH` 指向已有浏览器，`GENERATIVE_GIT_CHROMIUM` 指向可选可执行文件，`GENERATIVE_GIT_UI_FONT` 指向可选本地中文字体。脚本阻止所有页面网络请求，截图默认保存到同级 `.tmp/thread-ui-rewrite/`。
 

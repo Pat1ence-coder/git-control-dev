@@ -15,7 +15,9 @@
   "activationEvents": [
     "onView:generativeGit.main",
     "onCommand:generativeGit.open",
-    "onCommand:generativeGit.refresh"
+    "onCommand:generativeGit.refresh",
+    "onCommand:generativeGit.setDeepSeekKey",
+    "onCommand:generativeGit.clearDeepSeekKey"
   ],
   "extensionDependencies": [
     "vscode.git"
@@ -43,6 +45,14 @@
       {
         "command": "generativeGit.refresh",
         "title": "Generative Git: 刷新仓库"
+      },
+      {
+        "command": "generativeGit.setDeepSeekKey",
+        "title": "Generative Git: 设置 DeepSeek API Key"
+      },
+      {
+        "command": "generativeGit.clearDeepSeekKey",
+        "title": "Generative Git: 清除 DeepSeek API Key"
       }
     ],
     "viewsContainers": {
@@ -62,6 +72,36 @@
           "type": "webview"
         }
       ]
+    },
+    "configuration": {
+      "title": "Generative Git AI",
+      "properties": {
+        "generativeGit.ai.model": {
+          "type": "string",
+          "enum": [
+            "deepseek-v4-pro",
+            "deepseek-flash"
+          ],
+          "default": "deepseek-v4-pro",
+          "description": "DeepSeek 模型。v4-pro 适合复杂 Git 决策，flash 更快。"
+        },
+        "generativeGit.ai.reasoningEffort": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "low",
+            "high",
+            "max"
+          ],
+          "default": "high",
+          "description": "DeepSeek thinking 强度。auto 目前映射到 high；官方没有真正的 medium。"
+        },
+        "generativeGit.ai.thinking": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用 DeepSeek thinking。关闭后不请求 reasoning_content。"
+        }
+      }
     }
   },
   "scripts": {
